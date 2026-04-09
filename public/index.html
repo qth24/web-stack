@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>UIT HTTP Server</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <p class="eyebrow">Web Stack Project</p>
+      <h1>HTTP Server is running</h1>
+      <p>
+        This page is being served by a custom TCP-based HTTP server built for the
+        course project.
+      </p>
+
+      <section class="card">
+        <h2>Implemented in this skeleton</h2>
+        <ul>
+          <li>Listen on TCP port 8000</li>
+          <li>Receive HTTP requests from a browser</li>
+          <li>Parse request line and headers</li>
+          <li>Return HTTP responses and static files</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Test routes</h2>
+        <p><code>GET /</code> serves this page.</p>
+        <p><code>GET /health</code> returns a JSON health check.</p>
+      </section>
+    </main>
+  </body>
+</html>
