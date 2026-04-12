@@ -6,6 +6,7 @@ Simple protocol:
 """
 
 import socket
+import json
 from dataclasses import dataclass
 
 
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 DNS_HOST = "127.0.0.1"
 DNS_PORT = 5200
 DNS_TIMEOUT = 3.0       # seconds
-DNS_BUFFER = 1024       # bytes
+DNS_BUFFER = 4096       # bytes
 
 
 @dataclass
@@ -34,6 +35,7 @@ class DNSError(Exception):
 class DNSClient:
     """
     Sends DNS queries over UDP with a simple in-memory cache.
+    Uses JSON-based protocol.
     """
 
     def __init__(
@@ -70,25 +72,39 @@ class DNSClient:
         return DNSResult(domain=domain, ip=ip)
 
     def _query(self, domain: str) -> str:
-        """Sends raw UDP packet and receives response"""
+        """Sends JSON UDP packet and receives JSON response"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(self.timeout)
 
         try:
-            # Send domain name
-            sock.sendto(domain.encode("utf-8"), (self.server_host, self.server_port))
+            # Build and send JSON query
+            query_data = json.dumps({"domain": domain})
+            sock.sendto(query_data.encode("utf-8"), (self.server_host, self.server_port))
 
             # Receive response
             data, _ = sock.recvfrom(DNS_BUFFER)
-            response = data.decode("utf-8").strip()
+            response_text = data.decode("utf-8").strip()
+            
+            try:
+                response_json = json.loads(response_text)
+            except json.JSONDecodeError:
+                raise DNSError(f"DNS server returned malformed JSON: '{response_text}'")
 
-            # Check for error from DNS server
-            if response == "NXDOMAIN" or not response:
+            # Check status
+            status = response_json.get("status")
+            if status == "NXDOMAIN":
                 raise DNSError(f"Domain not found: '{domain}'")
+            elif status != "OK":
+                msg = response_json.get("message", "Unknown error")
+                raise DNSError(f"DNS server error ({status}): {msg}")
+
+            ip = response_json.get("ip")
+            if not ip:
+                raise DNSError(f"DNS server response missing 'ip' field: {response_text}")
 
             # Basic IP validation
-            self._validate_ip(response)
-            return response
+            self._validate_ip(ip)
+            return ip
 
         except socket.timeout:
             raise DNSError(
