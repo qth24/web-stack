@@ -15,7 +15,7 @@ from browser.core.http_client import HTTPClient, HTTPError
 
 
 DNS_SERVER_HOST = "127.0.0.1"
-DNS_SERVER_PORT = 5300
+DNS_SERVER_PORT = 5200
 HTTP_SERVER_PORT = 8000
 
 # Quick test URLs

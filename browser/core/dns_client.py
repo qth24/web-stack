@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 # DNS server configuration
 DNS_HOST = "127.0.0.1"
-DNS_PORT = 5300
+DNS_PORT = 5200
 DNS_TIMEOUT = 3.0       # seconds
 DNS_BUFFER = 1024       # bytes
 
