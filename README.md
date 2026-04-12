@@ -8,7 +8,7 @@ Flow:
 - Web server -> Browser
 
 ## DNS server
-Port: 5300
+Port: 5200
 
 
 ## HTTP server
