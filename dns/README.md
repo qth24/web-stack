@@ -1,15 +1,15 @@
 # DNS Module (Mini Web Stack)
 
-## Muc tieu
+## Goal
 
-Module nay mo phong DNS server don gian cho do an Mini Web Stack.
+This module simulates a simple DNS server for the Mini Web Stack project.
 
-- Nhan request UDP tu client/browser.
-- Phan giai `domain -> ip` tu static records.
-- Co cache TTL va lazy deletion.
-- Tra JSON response de client parse de dang.
+- Receives UDP requests from clients/browsers.
+- Resolves `domain -> ip` from static records.
+- Supports TTL cache with lazy deletion.
+- Returns JSON responses for easy client parsing.
 
-## Cau truc thu muc
+## Directory Structure
 
 ```text
 dns/
@@ -20,36 +20,36 @@ dns/
   dns_records.json
 ```
 
-## Vai tro tung file
+## File Responsibilities
 
-- `dns/dns_server.py`: network + handler layer
-  - `while True` + `socket.recvfrom()`
-  - parse request an toan
-  - goi cache va resolver
-  - tra response JSON
+- `dns/dns_server.py`: network and handler layer
+  - `while True` + `socket.recvfrom()` loop
+  - safely parses incoming requests
+  - calls cache and resolver
+  - returns JSON responses
 - `dns/dns_cache.py`: cache layer
   - `CacheEntry(ip, expire_at, ttl)`
-  - `DNSCache.get()` tra ve `HIT/MISS/EXPIRED`
-  - lazy deletion khi record het han
+  - `DNSCache.get()` returns `HIT/MISS/EXPIRED`
+  - lazy deletion for expired records
 - `dns/dns_resolver.py`: resolver layer
-  - load records tu `dns_records.json`
-  - normalize/validate domain
-  - resolve static records
-- `dns/dns_records.json`: bang domain tinh
+  - loads records from `dns_records.json`
+  - normalizes/validates domain names
+  - resolves static records
+- `dns/dns_records.json`: static domain mapping table
 
-## Flow xu ly request
+## Request Processing Flow
 
-1. Client gui UDP JSON: `{"domain": "example.local"}`
-2. Server parse + validate request
+1. Client sends UDP JSON: `{"domain": "example.local"}`
+2. Server parses and validates the request
 3. Normalize domain (`strip + lower`)
 4. Check cache
-   - HIT: tra ngay
-   - EXPIRED: xoa stale record
-   - MISS: lookup resolver
-5. Neu resolve duoc: update cache voi `expire_at = now + ttl`
-6. Neu khong co domain: tra `NXDOMAIN`
+   - HIT: return immediately
+   - EXPIRED: remove stale record
+   - MISS: resolve through resolver
+5. If resolved: update cache with `expire_at = now + ttl`
+6. If domain does not exist: return `NXDOMAIN`
 
-## Mau request/response
+## Request/Response Examples
 
 Request:
 
@@ -57,21 +57,21 @@ Request:
 {"domain": "example.local"}
 ```
 
-Response thanh cong:
+Successful response:
 
 ```json
 {"status": "OK", "domain": "example.local", "ip": "127.0.0.1", "expire_at": 1712656800.5}
 ```
 
-Response loi NXDOMAIN:
+NXDOMAIN error response:
 
 ```json
 {"status": "NXDOMAIN", "domain": "foo.local", "ip": null, "message": "Domain not found"}
 ```
 
-## Cach chay
+## How to Run
 
-Tu root project:
+From the project root:
 
 ```bash
 python3 dns/dns_server.py
@@ -83,23 +83,13 @@ Test client:
 python3 test_client.py --mode demo
 ```
 
-Mac dinh:
+Default settings:
 
 - host: `127.0.0.1`
 - port: `5200`
 
-## Demo nhanh cho buoi bao ve
+## Stability Notes
 
-1. Chay DNS server.
-2. Chay `test_client.py --mode demo`.
-3. Trinh bay 4 case:
-   - Lan 1: `CACHE MISS`
-   - Lan 2: `CACHE HIT`
-   - Sau TTL: `CACHE EXPIRED` -> resolve lai
-   - Domain khong ton tai: `NXDOMAIN`
-
-## Ghi chu on dinh
-
-- Single-thread, khong dung background cleanup thread.
-- Co gioi han kich thuoc UDP packet.
-- Parse UTF-8/JSON chat, khong de exception lam crash server loop.
+- Single-threaded; no background cleanup thread.
+- UDP packet size is limited.
+- Strict UTF-8/JSON parsing prevents exceptions from crashing the server loop.
