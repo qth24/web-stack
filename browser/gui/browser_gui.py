@@ -1,12 +1,33 @@
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
-import threading
+import html
 import time
 import sys
 import os
 
 # Add root directory to path to import core modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+try:
+    from PySide6.QtCore import Qt, QUrl
+    from PySide6.QtGui import QTextCursor
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+    from PySide6.QtWidgets import (
+        QApplication,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QMainWindow,
+        QMessageBox,
+        QPushButton,
+        QSplitter,
+        QStatusBar,
+        QTextEdit,
+        QVBoxLayout,
+        QWidget,
+    )
+except ImportError:
+    print("Missing GUI dependencies.")
+    print("Install with: python -m pip install PySide6")
+    raise SystemExit(1)
 
 from browser.core.url_parser import parse_url, URLParseError
 from browser.core.dns_client import DNSClient, DNSError
@@ -30,17 +51,26 @@ class BrowserApp:
     """
     Main browser window.
     Layout:
-      [toolbar]  -  address bar + Go/Clear buttons
-      [log]      -  step-by-step log (DNS query, HTTP request...)
-      [content]  -  rendered body content
+      [toolbar]  - address bar + Go/Clear buttons
+      [log]      - step-by-step log (DNS query, HTTP request...)
+      [content]  - web content (HTML/CSS/JS)
       [statusbar]
     """
 
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title("Mini Web Browser")
-        self.root.geometry("820x640")
-        self.root.minsize(600, 400)
+    LOG_COLORS = {
+        "info": "#89b4fa",
+        "ok": "#a6e3a1",
+        "warn": "#f9e2af",
+        "error": "#f38ba8",
+        "header": "#cba6f7",
+        "dim": "#6c7086",
+    }
+
+    def __init__(self):
+        self.window = QMainWindow()
+        self.window.setWindowTitle("Mini Web Browser")
+        self.window.resize(960, 700)
+        self.window.setMinimumSize(700, 500)
 
         self.dns_client = DNSClient(
             server_host=DNS_SERVER_HOST,
@@ -53,123 +83,89 @@ class BrowserApp:
 
 
     def _build_ui(self):
-        # Toolbar
-        toolbar = tk.Frame(self.root, pady=6, padx=8)
-        toolbar.pack(side=tk.TOP, fill=tk.X)
+        root_widget = QWidget()
+        self.window.setCentralWidget(root_widget)
 
-        tk.Label(toolbar, text="URL:").pack(side=tk.LEFT)
+        root_layout = QVBoxLayout(root_widget)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(6)
 
-        self.url_var = tk.StringVar()
-        self.url_entry = tk.Entry(toolbar, textvariable=self.url_var, width=55, font=("Courier", 11))
-        self.url_entry.pack(side=tk.LEFT, padx=(4, 6), ipady=3)
-        self.url_entry.insert(0, "http://example.local/")
+        toolbar = QHBoxLayout()
+        root_layout.addLayout(toolbar)
 
-        self.go_btn = tk.Button(
-            toolbar, text="Go", width=6, command=self._on_go,
-            bg="#4CAF50", fg="white", font=("Arial", 10, "bold"),
-            relief=tk.FLAT, cursor="hand2",
-        )
-        self.go_btn.pack(side=tk.LEFT)
+        toolbar.addWidget(QLabel("URL:"))
 
-        tk.Button(
-            toolbar, text="Clear", width=6, command=self._on_clear,
-            relief=tk.FLAT, cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(4, 0))
+        self.url_input = QLineEdit()
+        self.url_input.setText("http://example.local/")
+        toolbar.addWidget(self.url_input, 1)
 
-        # Bookmark buttons
-        tk.Label(toolbar, text="   Quick:").pack(side=tk.LEFT)
+        self.go_btn = QPushButton("Go")
+        self.go_btn.clicked.connect(self._on_go)
+        toolbar.addWidget(self.go_btn)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.clicked.connect(self._on_clear)
+        toolbar.addWidget(clear_btn)
+
+        toolbar.addWidget(QLabel("Quick:"))
         for bm in BOOKMARKS:
             short = bm.replace("http://", "").rstrip("/") or "/"
-            tk.Button(
-                toolbar, text=short, relief=tk.FLAT,
-                fg="#1565C0", cursor="hand2",
-                command=lambda u=bm: self._navigate_to(u),
-            ).pack(side=tk.LEFT, padx=2)
+            btn = QPushButton(short)
+            btn.clicked.connect(lambda _=False, u=bm: self._navigate_to(u))
+            toolbar.addWidget(btn)
 
-        # Separator
-        ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(fill=tk.X)
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        root_layout.addWidget(splitter, 1)
 
-        # Paned window: log top / content bottom
-        paned = tk.PanedWindow(self.root, orient=tk.VERTICAL, sashrelief=tk.RAISED)
-        paned.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-
-        # Log panel
-        log_frame = tk.LabelFrame(paned, text=" Request Log ", padx=4, pady=4)
-        paned.add(log_frame, minsize=120, height=170)
-
-        self.log_text = scrolledtext.ScrolledText(
-            log_frame, height=7, font=("Courier", 9),
-            state=tk.DISABLED, wrap=tk.WORD,
-            bg="#1e1e2e", fg="#cdd6f4",
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setStyleSheet(
+            "background:#1e1e2e;"
+            "color:#cdd6f4;"
+            "font-family:monospace;"
+            "font-size:12px;"
         )
-        self.log_text.pack(fill=tk.BOTH, expand=True)
+        splitter.addWidget(self.log_text)
 
-        # Log color tags
-        self.log_text.tag_config("info",    foreground="#89b4fa")  # blue
-        self.log_text.tag_config("ok",      foreground="#a6e3a1")  # green
-        self.log_text.tag_config("warn",    foreground="#f9e2af")  # yellow
-        self.log_text.tag_config("error",   foreground="#f38ba8")  # red
-        self.log_text.tag_config("header",  foreground="#cba6f7")  # purple
-        self.log_text.tag_config("dim",     foreground="#6c7086")  # gray
+        self.web_view = QWebEngineView()
+        splitter.addWidget(self.web_view)
+        splitter.setSizes([170, 500])
 
-        # Content panel
-        content_frame = tk.LabelFrame(paned, text=" Page Content ", padx=4, pady=4)
-        paned.add(content_frame, minsize=200)
-
-        self.content_text = scrolledtext.ScrolledText(
-            content_frame, font=("Courier", 10),
-            state=tk.DISABLED, wrap=tk.WORD,
-        )
-        self.content_text.pack(fill=tk.BOTH, expand=True)
-
-        # Status bar
-        self.status_var = tk.StringVar(value="Ready.")
-        status_bar = tk.Label(
-            self.root, textvariable=self.status_var,
-            anchor=tk.W, padx=8, pady=2,
-            relief=tk.SUNKEN, font=("Arial", 9),
-        )
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.status_bar = QStatusBar()
+        self.window.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Ready.")
 
     def _bind_shortcuts(self):
-        self.url_entry.bind("<Return>", lambda e: self._on_go())
-        self.root.bind("<Control-l>", lambda e: (self.url_entry.focus(), self.url_entry.select_range(0, tk.END)))
+        self.url_input.returnPressed.connect(self._on_go)
 
     # Event handlers
 
     def _on_go(self):
-        url = self.url_var.get().strip()
+        url = self.url_input.text().strip()
         if not url:
-            messagebox.showwarning("Missing URL", "Please enter a URL.")
+            QMessageBox.warning(self.window, "Missing URL", "Please enter a URL.")
             return
         self._navigate(url)
 
     def _on_clear(self):
         self._clear_log()
         self._clear_content()
-        self.status_var.set("Ready.")
+        self.status_bar.showMessage("Ready.")
 
     def _navigate_to(self, url: str):
-        self.url_var.set(url)
+        self.url_input.setText(url)
         self._navigate(url)
 
-    # Navigation (runs in separate thread)
+    # Navigation
 
     def _navigate(self, url: str):
-        """Starts navigation in background thread"""
         self._clear_log()
         self._clear_content()
         self._set_loading(True)
-        threading.Thread(target=self._fetch_url, args=(url,), daemon=True).start()
-
-    def _fetch_url(self, url: str):
-        """
-        Flow: parse -> DNS -> HTTP -> render
-        Updates UI via after()
-        """
-        start = time.time()
 
         try:
+            start = time.time()
+
             # Step 1: Parse URL
             self._log("─" * 50, "dim")
             self._log(f"[1/4] Parse URL: {url}", "info")
@@ -224,79 +220,76 @@ class BrowserApp:
 
             # Step 4: Render
             elapsed = time.time() - start
-            self._set_status(f"{response.status_code} {response.status_text}  |  {len(response.body)} bytes  |  {elapsed*1000:.0f}ms")
-            self._render_content(response)
+            self._set_status(
+                f"{response.status_code} {response.status_text}  |  "
+                f"{len(response.body)} chars  |  {elapsed * 1000:.0f}ms"
+            )
+            self._render_content(response, dns_result.ip, http_port, parsed.path)
 
         finally:
             self._set_loading(False)
 
-    # UI update helpers (thread-safe)
+    # UI helpers
 
     def _log(self, msg: str, tag: str = ""):
-        def _do():
-            self.log_text.config(state=tk.NORMAL)
-            self.log_text.insert(tk.END, msg + "\n", tag)
-            self.log_text.see(tk.END)
-            self.log_text.config(state=tk.DISABLED)
-        self.root.after(0, _do)
+        color = self.LOG_COLORS.get(tag, self.LOG_COLORS["dim"])
+        self.log_text.moveCursor(QTextCursor.MoveOperation.End)
+        self.log_text.insertHtml(
+            f'<span style="color:{color}; white-space:pre;">{html.escape(msg)}</span><br>'
+        )
+        self.log_text.moveCursor(QTextCursor.MoveOperation.End)
 
     def _clear_log(self):
-        self.log_text.config(state=tk.NORMAL)
-        self.log_text.delete("1.0", tk.END)
-        self.log_text.config(state=tk.DISABLED)
+        self.log_text.clear()
 
     def _clear_content(self):
-        self.content_text.config(state=tk.NORMAL)
-        self.content_text.delete("1.0", tk.END)
-        self.content_text.config(state=tk.DISABLED)
+        self.web_view.setHtml("")
 
-    def _render_content(self, response):
-        """Displays response body in content panel"""
-        def _do():
-            self.content_text.config(state=tk.NORMAL)
-            self.content_text.delete("1.0", tk.END)
+    def _render_content(self, response, ip: str, port: int, path: str):
+        content_type = response.headers.get("Content-Type", "").lower()
+        base_url = QUrl(f"http://{ip}:{port}{path}")
 
-            if response.is_ok:
-                self.content_text.insert(tk.END, response.body)
-            else:
-                # Simple error page
-                self.content_text.insert(
-                    tk.END,
-                    f"{'─'*40}\n"
-                    f"  {response.status_code} {response.status_text}\n"
-                    f"{'─'*40}\n\n"
-                    f"{response.body}",
-                )
+        if response.is_ok and "text/html" in content_type:
+            self.web_view.setHtml(response.body, base_url)
+            return
 
-            self.content_text.config(state=tk.DISABLED)
-        self.root.after(0, _do)
+        title = f"{response.status_code} {response.status_text}" if not response.is_ok else "Response Body"
+        escaped_body = html.escape(response.body)
+        self.web_view.setHtml(
+            "<html><body style='font-family:monospace; padding:16px;'>"
+            f"<h3>{html.escape(title)}</h3>"
+            f"<pre>{escaped_body}</pre>"
+            "</body></html>"
+        )
 
     def _show_error(self, msg: str):
-        def _do():
-            self.content_text.config(state=tk.NORMAL)
-            self.content_text.delete("1.0", tk.END)
-            self.content_text.insert(tk.END, f"❌  {msg}")
-            self.content_text.config(state=tk.DISABLED)
-            self.status_var.set("Error.")
-        self.root.after(0, _do)
+        QMessageBox.critical(self.window, "Navigation error", msg)
+        self.web_view.setHtml(
+            "<html><body style='font-family:sans-serif; padding:16px;'>"
+            "<h3>Navigation error</h3>"
+            f"<pre>{html.escape(msg)}</pre>"
+            "</body></html>"
+        )
+        self.status_bar.showMessage("Error.")
 
     def _set_status(self, msg: str):
-        self.root.after(0, lambda: self.status_var.set(msg))
+        self.status_bar.showMessage(msg)
 
     def _set_loading(self, loading: bool):
-        def _do():
-            if loading:
-                self.go_btn.config(state=tk.DISABLED, text="...")
-                self.status_var.set("Loading...")
-            else:
-                self.go_btn.config(state=tk.NORMAL, text="Go")
-        self.root.after(0, _do)
+        if loading:
+            self.go_btn.setEnabled(False)
+            self.go_btn.setText("...")
+            self.status_bar.showMessage("Loading...")
+        else:
+            self.go_btn.setEnabled(True)
+            self.go_btn.setText("Go")
 
 
 def main():
-    root = tk.Tk()
-    app = BrowserApp(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    browser = BrowserApp()
+    browser.window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
