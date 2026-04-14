@@ -5,7 +5,7 @@
 This module simulates a simple DNS server for the Mini Web Stack project.
 
 - Receives UDP requests from clients/browsers.
-- Resolves `domain -> ip` from static records.
+- Resolves `domain -> ip` from static records first, then falls back to upstream DNS (`8.8.8.8`, `1.1.1.1`).
 - Supports TTL cache with lazy deletion.
 - Returns JSON responses for easy client parsing.
 
@@ -34,7 +34,7 @@ dns/
 - `dns/dns_resolver.py`: resolver layer
   - loads records from `dns_records.json`
   - normalizes/validates domain names
-  - resolves static records
+  - resolves static records first, then public DNS fallback
 - `dns/dns_records.json`: static domain mapping table
 
 ## Request Processing Flow
@@ -46,8 +46,11 @@ dns/
    - HIT: return immediately
    - EXPIRED: remove stale record
    - MISS: resolve through resolver
-5. If resolved: update cache with `expire_at = now + ttl`
-6. If domain does not exist: return `NXDOMAIN`
+5. Resolver order
+   - static table lookup
+   - upstream DNS lookup (A record) if static miss
+6. If resolved: update cache with `expire_at = now + ttl`
+7. If still not found: return `NXDOMAIN`
 
 ## Request/Response Examples
 
@@ -77,16 +80,23 @@ From the project root:
 python3 dns/dns_server.py
 ```
 
-Test client:
+Disable upstream fallback (static-only mode):
 
 ```bash
-python3 test_client.py --mode demo
+python3 dns/dns_server.py --disable-upstream
+```
+
+Customize upstream DNS servers:
+
+```bash
+python3 dns/dns_server.py --upstream-servers 8.8.8.8,1.1.1.1 --upstream-timeout 2.0
 ```
 
 Default settings:
 
 - host: `127.0.0.1`
 - port: `5200`
+- upstream DNS: `8.8.8.8`, `1.1.1.1`
 
 ## Stability Notes
 

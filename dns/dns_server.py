@@ -11,8 +11,10 @@ try:
     from .dns_cache import DNSCache
     from .dns_resolver import (
         DEFAULT_RECORDS,
+        DEFAULT_UPSTREAM_SERVERS,
         StaticResolver,
         is_valid_domain,
+        is_valid_ipv4,
         load_records_from_file,
         normalize_domain,
     )
@@ -20,8 +22,10 @@ except ImportError:
     from dns_cache import DNSCache
     from dns_resolver import (
         DEFAULT_RECORDS,
+        DEFAULT_UPSTREAM_SERVERS,
         StaticResolver,
         is_valid_domain,
+        is_valid_ipv4,
         load_records_from_file,
         normalize_domain,
     )
@@ -224,11 +228,39 @@ class MiniDNSServer:
 def build_server(args: argparse.Namespace) -> MiniDNSServer:
     records = load_records_from_file(args.records, logger=log_event)
     cache = DNSCache()
-    resolver = StaticResolver(records=records, default_ttl=args.default_ttl)
+
+    raw_servers = [part.strip() for part in args.upstream_servers.split(",") if part.strip()]
+    upstream_servers = tuple(ip for ip in raw_servers if is_valid_ipv4(ip))
+    if not upstream_servers:
+        log_event("ERROR", "No valid upstream DNS servers configured. Using defaults.", "31")
+        upstream_servers = DEFAULT_UPSTREAM_SERVERS
+
+    resolver = StaticResolver(
+        records=records,
+        default_ttl=args.default_ttl,
+        enable_upstream=not args.disable_upstream,
+        upstream_servers=upstream_servers,
+        upstream_timeout=args.upstream_timeout,
+    )
+
+    if args.disable_upstream:
+        log_event("INFO", "Upstream DNS fallback is disabled")
+    else:
+        log_event(
+            "INFO",
+            f"Upstream DNS fallback enabled: {', '.join(resolver.upstream_servers)} "
+            f"(timeout={resolver.upstream_timeout:.1f}s)",
+        )
 
     if not resolver.records:
         log_event("ERROR", "No valid records loaded. Falling back to built-in defaults.", "31")
-        resolver = StaticResolver(records=DEFAULT_RECORDS, default_ttl=args.default_ttl)
+        resolver = StaticResolver(
+            records=DEFAULT_RECORDS,
+            default_ttl=args.default_ttl,
+            enable_upstream=not args.disable_upstream,
+            upstream_servers=upstream_servers,
+            upstream_timeout=args.upstream_timeout,
+        )
 
     handler = DNSRequestHandler(
         cache=cache,
@@ -254,6 +286,22 @@ def parse_args() -> argparse.Namespace:
         help="Path to static DNS record file (default: dns/dns_records.json)",
     )
     parser.add_argument("--default-ttl", type=int, default=5, help="Default TTL in seconds")
+    parser.add_argument(
+        "--disable-upstream",
+        action="store_true",
+        help="Disable fallback lookups to public DNS servers",
+    )
+    parser.add_argument(
+        "--upstream-servers",
+        default=",".join(DEFAULT_UPSTREAM_SERVERS),
+        help="Comma-separated upstream DNS IPv4 servers (default: 8.8.8.8,1.1.1.1)",
+    )
+    parser.add_argument(
+        "--upstream-timeout",
+        type=float,
+        default=2.0,
+        help="Timeout per upstream DNS server in seconds",
+    )
     parser.add_argument(
         "--max-request-bytes",
         type=int,
