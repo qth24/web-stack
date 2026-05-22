@@ -7,9 +7,10 @@ import socket
 from dataclasses import dataclass, field
 from typing import Optional
 
-
-HTTP_TIMEOUT = 5.0
-HTTP_BUFFER = 4096
+try:
+    from .config import HTTP_BUFFER, HTTP_TIMEOUT
+except ImportError:
+    from config import HTTP_BUFFER, HTTP_TIMEOUT
 
 
 @dataclass
@@ -174,13 +175,3 @@ class HTTPClient:
             body=body,
             raw=raw,
         )
-
-
-if __name__ == "__main__":
-    # Test with real HTTP server
-    client = HTTPClient()
-    try:
-        resp = client.get("127.0.0.1", 8000, "/", "example.local")
-        print(resp)
-    except HTTPError as e:
-        print(f"[ERR] {e}")

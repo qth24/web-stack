@@ -5,7 +5,7 @@
 This module simulates a simple DNS server for the Mini Web Stack project.
 
 - Receives UDP requests from clients/browsers.
-- Resolves `domain -> ip` from static records first, then falls back to upstream DNS (`8.8.8.8`, `1.1.1.1`).
+- Resolves `domain -> ip` from a static records table.
 - Supports TTL cache with lazy deletion.
 - Returns JSON responses for easy client parsing.
 
@@ -34,7 +34,7 @@ dns/
 - `dns/dns_resolver.py`: resolver layer
   - loads records from `dns_records.json`
   - normalizes/validates domain names
-  - resolves static records first, then public DNS fallback
+  - resolves only from the static records table
 - `dns/dns_records.json`: static domain mapping table
 
 ## Request Processing Flow
@@ -46,9 +46,7 @@ dns/
    - HIT: return immediately
    - EXPIRED: remove stale record
    - MISS: resolve through resolver
-5. Resolver order
-   - static table lookup
-   - upstream DNS lookup (A record) if static miss
+5. Resolver checks the static table
 6. If resolved: update cache with `expire_at = now + ttl`
 7. If still not found: return `NXDOMAIN`
 
@@ -77,29 +75,50 @@ NXDOMAIN error response:
 From the project root:
 
 ```bash
+cp dns/.env.example dns/.env
 python3 dns/dns_server.py
 ```
 
-Disable upstream fallback (static-only mode):
+Edit `dns/.env` to configure the server:
 
-```bash
-python3 dns/dns_server.py --disable-upstream
+```env
+DNS_BIND_HOST=0.0.0.0
+DNS_PORT=5200
+DNS_RECORDS_PATH=dns/dns_records.json
+DNS_DEFAULT_TTL=5
 ```
 
-Customize upstream DNS servers:
+Environment variables override values in `dns/.env`. CLI arguments still work for one-off overrides.
+
+Bind to a specific address/port:
 
 ```bash
-python3 dns/dns_server.py --upstream-servers 8.8.8.8,1.1.1.1 --upstream-timeout 2.0
+python3 dns/dns_server.py --host 0.0.0.0 --port 5200
 ```
 
-Default settings:
+Use another records file:
 
-- host: `127.0.0.1`
-- port: `5200`
-- upstream DNS: `8.8.8.8`, `1.1.1.1`
+```bash
+python3 dns/dns_server.py --records /path/to/dns_records.json
+```
+
+## VPS Usage
+
+1. Put this DNS module on the VPS.
+2. Copy `dns/.env.example` to `dns/.env`.
+3. Edit `dns/.env` and `dns_records.json` so each domain points to the HTTP server IP.
+4. Run `python3 dns/dns_server.py`.
+5. Open the configured UDP port in the VPS firewall/security group.
+6. Configure the browser with the VPS IP in `browser/.env`, for example:
+
+```env
+BROWSER_DNS_HOST=YOUR_VPS_IP
+BROWSER_DNS_PORT=5200
+```
 
 ## Stability Notes
 
 - Single-threaded; no background cleanup thread.
 - UDP packet size is limited.
 - Strict UTF-8/JSON parsing prevents exceptions from crashing the server loop.
+- This server is intentionally authoritative/static-only; unknown domains return `NXDOMAIN`.

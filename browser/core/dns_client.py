@@ -1,20 +1,20 @@
 """
 dns_client.py — Sends DNS queries to the DNS server via UDP.
 Simple protocol:
-  - Send: domain name (UTF-8 encoded)
-  - Receive: IP address (plain text) or "NXDOMAIN"
+  - Send: JSON {"domain": "example.local"}
+  - Receive: JSON {"status": "OK", "domain": "...", "ip": "...", "expire_at": ...}
 """
 
-import socket
 import json
+import socket
+import time
 from dataclasses import dataclass
+from typing import Optional
 
-
-# DNS server configuration
-DNS_HOST = "127.0.0.1"
-DNS_PORT = 5200
-DNS_TIMEOUT = 3.0       # seconds
-DNS_BUFFER = 4096       # bytes
+try:
+    from .config import DNS_BUFFER, DNS_HOST, DNS_PORT, DNS_TIMEOUT, ENABLE_DNS_CACHE
+except ImportError:
+    from config import DNS_BUFFER, DNS_HOST, DNS_PORT, DNS_TIMEOUT, ENABLE_DNS_CACHE
 
 
 @dataclass
@@ -22,6 +22,7 @@ class DNSResult:
     domain: str
     ip: str
     from_cache: bool = False
+    expire_at: Optional[float] = None
 
     def __str__(self):
         src = " [cache]" if self.from_cache else ""
@@ -43,13 +44,13 @@ class DNSClient:
         server_host: str = DNS_HOST,
         server_port: int = DNS_PORT,
         timeout: float = DNS_TIMEOUT,
-        enable_cache: bool = True,
+        enable_cache: bool = ENABLE_DNS_CACHE,
     ):
         self.server_host = server_host
         self.server_port = server_port
         self.timeout = timeout
         self.enable_cache = enable_cache
-        self._cache: dict[str, str] = {}
+        self._cache: dict[str, DNSResult] = {}
 
     def resolve(self, domain: str) -> DNSResult:
         """
@@ -57,21 +58,32 @@ class DNSClient:
         Uses cache if available, otherwise sends UDP query.
         """
         domain = domain.strip().lower()
+        if not domain:
+            raise DNSError("Domain cannot be empty")
 
         # Check cache
-        if self.enable_cache and domain in self._cache:
-            return DNSResult(domain=domain, ip=self._cache[domain], from_cache=True)
+        if self.enable_cache:
+            cached = self._cache.get(domain)
+            if cached and (cached.expire_at is None or cached.expire_at > time.time()):
+                return DNSResult(
+                    domain=cached.domain,
+                    ip=cached.ip,
+                    from_cache=True,
+                    expire_at=cached.expire_at,
+                )
+            if cached:
+                del self._cache[domain]
 
         # Send UDP query
-        ip = self._query(domain)
+        result = self._query(domain)
 
         # Save to cache
         if self.enable_cache:
-            self._cache[domain] = ip
+            self._cache[domain] = result
 
-        return DNSResult(domain=domain, ip=ip)
+        return result
 
-    def _query(self, domain: str) -> str:
+    def _query(self, domain: str) -> DNSResult:
         """Sends JSON UDP packet and receives JSON response"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(self.timeout)
@@ -104,7 +116,11 @@ class DNSClient:
 
             # Basic IP validation
             self._validate_ip(ip)
-            return ip
+            resolved_domain = response_json.get("domain") or domain
+            expire_at = response_json.get("expire_at")
+            if not isinstance(expire_at, (int, float)):
+                expire_at = None
+            return DNSResult(domain=resolved_domain, ip=ip, expire_at=expire_at)
 
         except socket.timeout:
             raise DNSError(
@@ -136,22 +152,19 @@ class DNSClient:
         self._cache.clear()
 
     def get_cache(self) -> dict:
-        return dict(self._cache)
+        now = time.time()
+        expired_domains = [
+            domain
+            for domain, result in self._cache.items()
+            if result.expire_at is not None and result.expire_at <= now
+        ]
+        for domain in expired_domains:
+            del self._cache[domain]
 
-
-if __name__ == "__main__":
-    client = DNSClient()
-
-    for domain in ["example.local", "test.local", "notfound.local"]:
-        try:
-            result = client.resolve(domain)
-            print(f"[OK]  {result}")
-        except DNSError as e:
-            print(f"[ERR] {e}")
-
-    # Second call should use cache
-    try:
-        r = client.resolve("example.local")
-        print(f"[OK]  {r}")
-    except DNSError as e:
-        print(f"[ERR] {e}")
+        return {
+            domain: {
+                "ip": result.ip,
+                "expire_at": result.expire_at,
+            }
+            for domain, result in self._cache.items()
+        }

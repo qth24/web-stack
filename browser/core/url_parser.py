@@ -78,19 +78,3 @@ def parse_url(url: str) -> ParsedURL:
         query=query,
         raw=url,
     )
-
-
-if __name__ == "__main__":
-    test_urls = [
-        "http://example.local/about",
-        "http://test.local:8080/page?id=1",
-        "example.local",           # missing scheme
-        "ftp://bad.local",         # unsupported scheme
-    ]
-
-    for u in test_urls:
-        try:
-            result = parse_url(u)
-            print(result)
-        except URLParseError as e:
-            print(f"[ERROR] {e}\n")
