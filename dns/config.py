@@ -42,9 +42,26 @@ def _get_int(name: str, default: int) -> int:
 
 _load_env_file(ENV_PATH)
 
+
+def _resolve_path(value: str) -> str:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return str(path)
+
+    project_path = DNS_DIR.parent / path
+    if project_path.exists():
+        return str(project_path)
+
+    dns_path = DNS_DIR / path
+    if dns_path.exists():
+        return str(dns_path)
+
+    return str(project_path)
+
+
 BIND_HOST = _get_str("DNS_BIND_HOST", "0.0.0.0")
-PORT = _get_int("DNS_PORT", 5200)
-RECORDS_PATH = _get_str("DNS_RECORDS_PATH", str(DNS_DIR / "dns_records.json"))
+PORT = _get_int("DNS_PORT", 53)
+RECORDS_PATH = _resolve_path(_get_str("DNS_RECORDS_PATH", str(DNS_DIR / "dns_records.json")))
 DEFAULT_TTL = _get_int("DNS_DEFAULT_TTL", 5)
 MAX_REQUEST_BYTES = _get_int("DNS_MAX_REQUEST_BYTES", 1024)
 MAX_RESPONSE_BYTES = _get_int("DNS_MAX_RESPONSE_BYTES", 2048)

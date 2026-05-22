@@ -6,6 +6,7 @@ from pathlib import Path
 
 BROWSER_DIR = Path(__file__).resolve().parents[1]
 ENV_PATH = BROWSER_DIR / ".env"
+CONFIGURED_KEYS = set(os.environ)
 
 
 def _load_env_file(path: Path) -> None:
@@ -27,6 +28,8 @@ def _load_env_file(path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
+        if key:
+            CONFIGURED_KEYS.add(key)
 
 
 def _get_str(name: str, default: str) -> str:
@@ -64,16 +67,20 @@ def _get_list(name: str, default: list[str]) -> list[str]:
 _load_env_file(ENV_PATH)
 
 DNS_HOST = _get_str("BROWSER_DNS_HOST", "127.0.0.1")
-DNS_PORT = _get_int("BROWSER_DNS_PORT", 5200)
+DNS_PORT = _get_int("BROWSER_DNS_PORT", 53)
 DNS_TIMEOUT = _get_float("BROWSER_DNS_TIMEOUT", 3.0)
 DNS_BUFFER = _get_int("BROWSER_DNS_BUFFER", 4096)
 ENABLE_DNS_CACHE = _get_bool("BROWSER_ENABLE_DNS_CACHE", True)
 
 HTTP_TIMEOUT = _get_float("BROWSER_HTTP_TIMEOUT", 5.0)
 HTTP_BUFFER = _get_int("BROWSER_HTTP_BUFFER", 4096)
-HTTP_DEFAULT_PORT = _get_int("BROWSER_HTTP_DEFAULT_PORT", 8000)
+HTTP_DEFAULT_PORT = _get_int("BROWSER_HTTP_DEFAULT_PORT", 80)
 
-HOME_URL = _get_str("BROWSER_HOME_URL", "http://example.local/")
+HOME_URL = _get_str("BROWSER_HOME_URL", "internal:home")
+SEARCH_URL = _get_str("BROWSER_SEARCH_URL", "internal:search?q={query}")
+BROWSER_THEME = _get_str("BROWSER_THEME", "light").lower()
+SEARCH_ENGINE = _get_str("BROWSER_SEARCH_ENGINE", "google").lower()
+BROWSER_FONT_SIZE = _get_int("BROWSER_FONT_SIZE", 16)
 DEFAULT_BOOKMARKS = _get_list(
     "BROWSER_DEFAULT_BOOKMARKS",
     [

@@ -1,24 +1,34 @@
 import html
 import json
+import os
+import re
+import socket
 import sys
 import time
+import base64
 from dataclasses import dataclass, field
-from typing import Any, Optional
-
-# Add root directory to path to import core modules.
 from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import parse_qs, quote_plus, unquote_plus, urlencode, urlparse
+from urllib.request import Request, urlopen
 
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 try:
-    from PySide6.QtCore import Qt, QUrl
-    from PySide6.QtGui import QAction, QTextCursor
+    from PySide6.QtCore import Qt, QTimer, QUrl
+    from PySide6.QtGui import QAction, QIcon
+    try:
+        from PySide6.QtWebEngineCore import QWebEnginePage
+    except ImportError:
+        QWebEnginePage = None
     from PySide6.QtWebEngineWidgets import QWebEngineView
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
         QDialog,
         QDialogButtonBox,
+        QFileDialog,
         QFormLayout,
         QFrame,
         QHBoxLayout,
@@ -28,14 +38,17 @@ try:
         QListWidget,
         QListWidgetItem,
         QMainWindow,
+        QMenu,
         QMessageBox,
         QPushButton,
+        QComboBox,
+        QStyle,
         QSpinBox,
         QSplitter,
         QStatusBar,
+        QTabWidget,
         QTableWidget,
         QTableWidgetItem,
-        QTabWidget,
         QTextEdit,
         QToolBar,
         QVBoxLayout,
@@ -47,6 +60,7 @@ except ImportError:
     raise SystemExit(1)
 
 from browser.core.config import (
+    CONFIGURED_KEYS,
     DEFAULT_BOOKMARKS,
     DNS_HOST,
     DNS_PORT,
@@ -54,10 +68,14 @@ from browser.core.config import (
     ENABLE_DNS_CACHE,
     HOME_URL,
     HTTP_DEFAULT_PORT,
+    SEARCH_URL,
     STATE_PATH,
+    BROWSER_THEME,
+    SEARCH_ENGINE,
+    BROWSER_FONT_SIZE,
 )
 from browser.core.dns_client import DNSClient, DNSError
-from browser.core.http_client import HTTPClient, HTTPError
+from browser.core.http_client import HTTPClient, HTTPError, HTTPResponse
 from browser.core.url_parser import URLParseError, parse_url
 
 
@@ -69,18 +87,22 @@ class BrowserSettings:
     http_default_port: int = HTTP_DEFAULT_PORT
     enable_dns_cache: bool = ENABLE_DNS_CACHE
     home_url: str = HOME_URL
+    search_url: str = SEARCH_URL
+    theme: str = BROWSER_THEME
+    font_size: int = BROWSER_FONT_SIZE
+    search_engine: str = SEARCH_ENGINE if SEARCH_ENGINE in {"google", "bing"} else "google"
 
 
 @dataclass
 class NetworkEvent:
     url: str
-    host: str
-    path: str
-    dns_server: str
+    host: str = ""
+    path: str = ""
+    dns_server: str = ""
     dns_ip: Optional[str] = None
     dns_from_cache: bool = False
     dns_ttl_remaining: Optional[int] = None
-    http_endpoint: str = ""
+    endpoint: str = ""
     status: str = ""
     duration_ms: int = 0
     error: str = ""
@@ -88,30 +110,72 @@ class NetworkEvent:
     response_headers: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class BrowserTab:
+    view: QWebEngineView
+    page: Any = None
+    current_url: str = ""
+    title: str = "New Tab"
+    back_stack: list[str] = field(default_factory=list)
+    forward_stack: list[str] = field(default_factory=list)
+    last_response: Optional[HTTPResponse] = None
+    last_event: Optional[NetworkEvent] = None
+    incognito: bool = False
+    cookies: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+class BrowserPage(QWebEnginePage if QWebEnginePage else object):
+    def __init__(self, app: "BrowserApp", tab: BrowserTab):
+        if QWebEnginePage:
+            super().__init__(tab.view)
+        self.browser_app = app
+        self.browser_tab = tab
+
+    def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
+        link_clicked = getattr(
+            getattr(QWebEnginePage, "NavigationType", QWebEnginePage),
+            "NavigationTypeLinkClicked",
+            None,
+        )
+        target = url.toString()
+        if is_main_frame and target.startswith("internal:"):
+            QTimer.singleShot(0, lambda: self.browser_app._handle_internal_url(target, tab=self.browser_tab))
+            return False
+        if is_main_frame and nav_type == link_clicked:
+            QTimer.singleShot(0, lambda: self.browser_app._navigate(target, tab=self.browser_tab))
+            return False
+        return True
+
+
 class SettingsDialog(QDialog):
     def __init__(self, parent: QWidget, settings: BrowserSettings):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(500)
 
         self.dns_host_input = QLineEdit(settings.dns_host)
-
         self.dns_port_input = QSpinBox()
         self.dns_port_input.setRange(1, 65535)
         self.dns_port_input.setValue(settings.dns_port)
-
         self.dns_timeout_input = QSpinBox()
         self.dns_timeout_input.setRange(1, 30)
         self.dns_timeout_input.setValue(int(settings.dns_timeout))
-
         self.http_port_input = QSpinBox()
         self.http_port_input.setRange(1, 65535)
         self.http_port_input.setValue(settings.http_default_port)
-
         self.cache_input = QCheckBox("Enable DNS TTL cache")
         self.cache_input.setChecked(settings.enable_dns_cache)
-
         self.home_url_input = QLineEdit(settings.home_url)
+        self.search_url_input = QLineEdit(settings.search_url)
+        self.theme_input = QComboBox()
+        self.theme_input.addItems(["light", "dark"])
+        self.theme_input.setCurrentText(settings.theme if settings.theme in {"light", "dark"} else "light")
+        self.font_size_input = QSpinBox()
+        self.font_size_input.setRange(12, 24)
+        self.font_size_input.setValue(settings.font_size)
+        self.search_engine_input = QComboBox()
+        self.search_engine_input.addItems(["google", "bing"])
+        self.search_engine_input.setCurrentText(settings.search_engine)
 
         form = QFormLayout()
         form.addRow("DNS host", self.dns_host_input)
@@ -119,6 +183,10 @@ class SettingsDialog(QDialog):
         form.addRow("DNS timeout", self.dns_timeout_input)
         form.addRow("Default HTTP port", self.http_port_input)
         form.addRow("Home URL", self.home_url_input)
+        form.addRow("Search URL", self.search_url_input)
+        form.addRow("Search engine", self.search_engine_input)
+        form.addRow("Theme", self.theme_input)
+        form.addRow("Font size", self.font_size_input)
         form.addRow("", self.cache_input)
 
         buttons = QDialogButtonBox(
@@ -139,158 +207,160 @@ class SettingsDialog(QDialog):
             http_default_port=self.http_port_input.value(),
             enable_dns_cache=self.cache_input.isChecked(),
             home_url=self.home_url_input.text().strip() or HOME_URL,
+            search_url=self.search_url_input.text().strip() or SEARCH_URL,
+            theme=self.theme_input.currentText(),
+            font_size=self.font_size_input.value(),
+            search_engine=self.search_engine_input.currentText(),
         )
 
 
 class BrowserApp:
-    LOG_COLORS = {
-        "info": "#1d4ed8",
-        "ok": "#15803d",
-        "warn": "#a16207",
-        "error": "#b91c1c",
-        "dim": "#64748b",
-    }
-
     def __init__(self):
         self.settings = self._load_settings()
         self.bookmarks = self._load_list("bookmarks", DEFAULT_BOOKMARKS)
-        self.history = self._load_list("history", [])
-        self.back_stack: list[str] = []
-        self.forward_stack: list[str] = []
-        self.current_url = ""
+        self.shortcuts = self._load_shortcuts(DEFAULT_BOOKMARKS)
+        self.history = self._load_history()
+        self.cookies = self._load_cookies()
         self.network_events: list[NetworkEvent] = []
-
-        self.window = QMainWindow()
-        self.window.setWindowTitle("Mini Web Browser")
-        self.window.resize(1180, 760)
-        self.window.setMinimumSize(900, 560)
 
         self.dns_client = self._make_dns_client()
         self.http_client = HTTPClient()
 
+        self.window = QMainWindow()
+        self.window.setWindowTitle("Mini Web Browser")
+        self.window.resize(1240, 780)
+        self.window.setMinimumSize(980, 620)
+
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setTabsClosable(True)
+        self.tabs.setMovable(True)
+
         self._build_ui()
         self._bind_actions()
-        self._refresh_all_lists()
-        self._navigate(self.settings.home_url, add_to_history=False)
-
-    def _make_dns_client(self) -> DNSClient:
-        return DNSClient(
-            server_host=self.settings.dns_host,
-            server_port=self.settings.dns_port,
-            timeout=self.settings.dns_timeout,
-            enable_cache=self.settings.enable_dns_cache,
-        )
+        self._apply_style()
+        self._new_tab(self.settings.home_url)
 
     def _build_ui(self):
-        root_widget = QWidget()
-        self.window.setCentralWidget(root_widget)
-
-        root_layout = QVBoxLayout(root_widget)
-        root_layout.setContentsMargins(8, 8, 8, 8)
-        root_layout.setSpacing(6)
+        central = QWidget()
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        self.window.setCentralWidget(central)
 
         self.toolbar = QToolBar("Navigation")
         self.toolbar.setMovable(False)
         self.window.addToolBar(self.toolbar)
 
-        self.back_action = QAction("Back", self.window)
-        self.forward_action = QAction("Forward", self.window)
-        self.reload_action = QAction("Reload", self.window)
-        self.home_action = QAction("Home", self.window)
+        style = QApplication.style()
+        self.back_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack), "", self.window)
+        self.forward_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), "", self.window)
+        self.reload_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "", self.window)
+        self.home_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_DirHomeIcon), "", self.window)
+        self.back_action.setToolTip("Back")
+        self.forward_action.setToolTip("Forward")
+        self.reload_action.setToolTip("Reload")
+        self.home_action.setToolTip("Home")
+        self.new_tab_action = QAction("+", self.window)
+        self.incognito_action = QAction("Incognito", self.window)
         self.bookmark_action = QAction("Bookmark", self.window)
+        self.history_action = QAction("History", self.window)
+        self.bookmarks_action = QAction("Bookmarks", self.window)
+        self.add_shortcut_action = QAction("Add Shortcut", self.window)
+        self.print_action = QAction("Print", self.window)
+        self.download_action = QAction("Download", self.window)
+        self.devtools_action = QAction("DevTools", self.window)
         self.settings_action = QAction("Settings", self.window)
 
-        self.toolbar.addAction(self.back_action)
-        self.toolbar.addAction(self.forward_action)
-        self.toolbar.addAction(self.reload_action)
-        self.toolbar.addAction(self.home_action)
-        self.toolbar.addSeparator()
+        for action in [
+            self.back_action,
+            self.forward_action,
+            self.reload_action,
+            self.home_action,
+            self.new_tab_action,
+        ]:
+            self.toolbar.addAction(action)
 
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText(HOME_URL)
+        self.url_input.setClearButtonEnabled(True)
+        self.url_input.setPlaceholderText("Search or enter address")
         self.toolbar.addWidget(self.url_input)
 
         self.go_action = QAction("Go", self.window)
         self.toolbar.addAction(self.go_action)
-        self.toolbar.addSeparator()
-        self.toolbar.addAction(self.bookmark_action)
-        self.toolbar.addAction(self.settings_action)
 
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        root_layout.addWidget(main_splitter, 1)
+        self.menu_button = QPushButton("Menu")
+        self.menu = QMenu(self.menu_button)
+        self.menu.addAction(self.new_tab_action)
+        self.menu.addAction(self.incognito_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.history_action)
+        self.menu.addAction(self.bookmarks_action)
+        self.menu.addAction(self.bookmark_action)
+        self.menu.addAction(self.add_shortcut_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.print_action)
+        self.menu.addAction(self.download_action)
+        self.menu.addAction(self.devtools_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.settings_action)
+        self.menu_button.setMenu(self.menu)
+        self.toolbar.addWidget(self.menu_button)
 
-        self.side_tabs = QTabWidget()
-        self.side_tabs.setMinimumWidth(240)
-        main_splitter.addWidget(self.side_tabs)
+        main_splitter = QSplitter(Qt.Orientation.Vertical)
+        root.addWidget(main_splitter, 1)
+        main_splitter.addWidget(self.tabs)
 
-        history_panel = QWidget()
-        history_layout = QVBoxLayout(history_panel)
-        history_layout.setContentsMargins(0, 0, 0, 0)
-        self.history_list = QListWidget()
-        self.clear_history_btn = QPushButton("Clear History")
-        history_layout.addWidget(self.history_list)
-        history_layout.addWidget(self.clear_history_btn)
-
-        bookmark_panel = QWidget()
-        bookmark_layout = QVBoxLayout(bookmark_panel)
-        bookmark_layout.setContentsMargins(0, 0, 0, 0)
-        self.bookmark_list = QListWidget()
-        bookmark_buttons = QHBoxLayout()
-        self.add_bookmark_btn = QPushButton("Add")
-        self.remove_bookmark_btn = QPushButton("Remove")
-        bookmark_buttons.addWidget(self.add_bookmark_btn)
-        bookmark_buttons.addWidget(self.remove_bookmark_btn)
-        bookmark_layout.addWidget(self.bookmark_list)
-        bookmark_layout.addLayout(bookmark_buttons)
-
-        cache_panel = QWidget()
-        cache_layout = QVBoxLayout(cache_panel)
-        cache_layout.setContentsMargins(0, 0, 0, 0)
-        self.cache_table = QTableWidget(0, 4)
-        self.cache_table.setHorizontalHeaderLabels(["Domain", "IP", "TTL", "Expires"])
-        self.cache_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.clear_cache_btn = QPushButton("Clear DNS Cache")
-        cache_layout.addWidget(self.cache_table)
-        cache_layout.addWidget(self.clear_cache_btn)
-
-        self.side_tabs.addTab(history_panel, "History")
-        self.side_tabs.addTab(bookmark_panel, "Bookmarks")
-        self.side_tabs.addTab(cache_panel, "DNS Cache")
-
-        center_splitter = QSplitter(Qt.Orientation.Vertical)
-        main_splitter.addWidget(center_splitter)
-
-        self.web_view = QWebEngineView()
-        center_splitter.addWidget(self.web_view)
-
-        inspector_frame = QFrame()
-        inspector_layout = QVBoxLayout(inspector_frame)
-        inspector_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.inspector_tabs = QTabWidget()
-        inspector_layout.addWidget(self.inspector_tabs)
+        self.devtools_frame = QFrame()
+        devtools_layout = QVBoxLayout(self.devtools_frame)
+        devtools_layout.setContentsMargins(6, 6, 6, 6)
+        devtools_header = QHBoxLayout()
+        devtools_header.addWidget(QLabel("DevTools"))
+        devtools_header.addStretch(1)
+        self.close_devtools_btn = QPushButton("X")
+        self.close_devtools_btn.setFixedWidth(34)
+        devtools_header.addWidget(self.close_devtools_btn)
+        devtools_layout.addLayout(devtools_header)
+        self.devtools_tabs = QTabWidget()
+        devtools_layout.addWidget(self.devtools_tabs)
 
         self.network_table = QTableWidget(0, 8)
         self.network_table.setHorizontalHeaderLabels(
             ["URL", "DNS IP", "Cache", "TTL", "Endpoint", "Status", "Time", "Error"]
         )
         self.network_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.inspector_tabs.addTab(self.network_table, "Network")
+        self.devtools_tabs.addTab(self.network_table, "Network")
 
-        self.detail_text = QTextEdit()
-        self.detail_text.setReadOnly(True)
-        self.inspector_tabs.addTab(self.detail_text, "Details")
+        self.details_text = QTextEdit()
+        self.details_text.setReadOnly(True)
+        self.devtools_tabs.addTab(self.details_text, "Headers")
 
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.inspector_tabs.addTab(self.log_text, "Log")
+        self.cookies_table = QTableWidget(0, 3)
+        self.cookies_table.setHorizontalHeaderLabels(["Domain", "Name", "Value"])
+        self.cookies_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.devtools_tabs.addTab(self.cookies_table, "Cookies")
 
-        center_splitter.addWidget(inspector_frame)
-        center_splitter.setSizes([520, 220])
-        main_splitter.setSizes([260, 900])
+        self.inspector_text = QTextEdit()
+        self.inspector_text.setReadOnly(True)
+        self.devtools_tabs.addTab(self.inspector_text, "Inspector")
+
+        self.console_text = QTextEdit()
+        self.console_text.setReadOnly(True)
+        self.devtools_tabs.addTab(self.console_text, "Console")
+
+        self.history_list = QListWidget()
+        self.devtools_tabs.addTab(self.history_list, "History")
+
+        self.bookmark_list = QListWidget()
+        self.devtools_tabs.addTab(self.bookmark_list, "Bookmarks")
+
+        main_splitter.addWidget(self.devtools_frame)
+        main_splitter.setSizes([590, 190])
+        self.devtools_frame.hide()
 
         self.status_bar = QStatusBar()
         self.window.setStatusBar(self.status_bar)
+        self._refresh_side_lists()
         self._set_status("Ready.")
 
     def _bind_actions(self):
@@ -300,293 +370,738 @@ class BrowserApp:
         self.forward_action.triggered.connect(self._go_forward)
         self.reload_action.triggered.connect(self._reload)
         self.home_action.triggered.connect(lambda: self._navigate(self.settings.home_url))
-        self.bookmark_action.triggered.connect(self._add_current_bookmark)
-        self.settings_action.triggered.connect(self._open_settings)
-        self.add_bookmark_btn.clicked.connect(self._add_current_bookmark)
-        self.remove_bookmark_btn.clicked.connect(self._remove_selected_bookmark)
-        self.clear_history_btn.clicked.connect(self._clear_history)
-        self.clear_cache_btn.clicked.connect(self._clear_dns_cache)
+        self.new_tab_action.triggered.connect(lambda: self._new_tab(self.settings.home_url))
+        self.incognito_action.triggered.connect(lambda: self._new_tab(self.settings.home_url, True))
+        self.bookmark_action.triggered.connect(self._bookmark_current)
+        self.history_action.triggered.connect(self._show_history_page)
+        self.bookmarks_action.triggered.connect(self._show_bookmarks_page)
+        self.add_shortcut_action.triggered.connect(self._add_shortcut_current)
+        self.print_action.triggered.connect(self._print_current)
+        self.download_action.triggered.connect(self._download_current)
+        self.devtools_action.triggered.connect(self._toggle_devtools)
+        self.close_devtools_btn.clicked.connect(lambda: self.devtools_frame.hide())
+        self.settings_action.triggered.connect(self._open_settings_page)
+        self.tabs.currentChanged.connect(lambda _: self._sync_toolbar())
+        self.tabs.tabCloseRequested.connect(self._close_tab)
+        self.network_table.itemSelectionChanged.connect(self._show_selected_event)
         self.history_list.itemDoubleClicked.connect(self._open_list_item)
         self.bookmark_list.itemDoubleClicked.connect(self._open_list_item)
-        self.network_table.itemSelectionChanged.connect(self._show_selected_network_event)
+
+    def _apply_style(self):
+        dark = self.settings.theme == "dark"
+        colors = {
+            "window": "#111827" if dark else "#f8fafc",
+            "bar": "#1f2937" if dark else "#e8edf3",
+            "panel": "#0f172a" if dark else "#ffffff",
+            "panel2": "#111827" if dark else "#f9fafb",
+            "text": "#e5e7eb" if dark else "#111827",
+            "muted": "#9ca3af" if dark else "#475569",
+            "border": "#4b5563" if dark else "#94a3b8",
+            "border2": "#374151" if dark else "#cbd5e1",
+            "tab": "#273244" if dark else "#dbe3ee",
+            "tab_selected": "#111827" if dark else "#ffffff",
+            "input": "#0b1220" if dark else "#ffffff",
+            "accent": "#60a5fa" if dark else "#2563eb",
+        }
+        self.window.setStyleSheet(
+            f"""
+            QMainWindow {{ background: {colors['window']}; color: {colors['text']}; }}
+            QToolBar {{
+                background: {colors['bar']};
+                border-bottom: 1px solid {colors['border']};
+                spacing: 6px;
+                padding: 6px;
+            }}
+            QToolButton {{
+                color: {colors['text']};
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 6px;
+                padding: 6px 8px;
+            }}
+            QToolButton:hover {{ border-color: {colors['border']}; background: {colors['panel2']}; }}
+            QPushButton {{
+                color: {colors['text']};
+                background: {colors['panel2']};
+                border: 1px solid {colors['border']};
+                border-radius: 6px;
+                padding: 6px 10px;
+            }}
+            QPushButton::menu-indicator {{ image: none; width: 0; }}
+            QLineEdit {{
+                color: {colors['text']};
+                background: {colors['input']};
+                border: 1px solid {colors['border']};
+                border-radius: 16px;
+                padding: 8px 14px;
+                selection-background-color: {colors['accent']};
+            }}
+            QLineEdit:focus {{ border: 2px solid {colors['accent']}; padding: 7px 13px; }}
+            QTabWidget::pane {{
+                border-top: 1px solid {colors['border']};
+                background: {colors['panel']};
+            }}
+            QTabBar::tab {{
+                color: {colors['muted']};
+                background: {colors['tab']};
+                border: 1px solid {colors['border']};
+                border-bottom: 0;
+                padding: 8px 14px;
+                margin-right: 2px;
+                min-width: 110px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+            }}
+            QTabBar::tab:selected {{
+                color: {colors['text']};
+                background: {colors['tab_selected']};
+                border-color: {colors['border']};
+            }}
+            QFrame {{
+                background: {colors['panel']};
+                border: 1px solid {colors['border']};
+            }}
+            QTableWidget, QListWidget, QTextEdit {{
+                color: {colors['text']};
+                background: {colors['panel']};
+                border: 1px solid {colors['border']};
+                gridline-color: {colors['border2']};
+                selection-background-color: {colors['accent']};
+            }}
+            QHeaderView::section {{
+                color: {colors['text']};
+                background: {colors['bar']};
+                border: 0;
+                border-right: 1px solid {colors['border']};
+                border-bottom: 1px solid {colors['border']};
+                padding: 5px;
+            }}
+            QComboBox, QSpinBox {{
+                color: {colors['text']};
+                background: {colors['input']};
+                border: 1px solid {colors['border']};
+                border-radius: 6px;
+                padding: 5px 8px;
+            }}
+            QMenu {{
+                color: {colors['text']};
+                background: {colors['panel']};
+                border: 1px solid {colors['border']};
+            }}
+            QMenu::item {{ padding: 7px 22px; }}
+            QMenu::item:selected {{ background: {colors['accent']}; color: white; }}
+            QStatusBar {{
+                color: {colors['muted']};
+                background: {colors['bar']};
+                border-top: 1px solid {colors['border']};
+            }}
+            """
+        )
+
+    def _new_tab(self, url: str = "", incognito: bool = False):
+        view = QWebEngineView()
+        tab = BrowserTab(view=view, incognito=incognito)
+        view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        view.customContextMenuRequested.connect(lambda pos, v=view: self._show_context_menu(v, pos))
+        if QWebEnginePage:
+            tab.page = BrowserPage(self, tab)
+            view.setPage(tab.page)
+        index = self.tabs.addTab(view, "Incognito" if incognito else "New Tab")
+        self.tabs.setCurrentIndex(index)
+        view.setProperty("browser_tab", tab)
+        if url:
+            self._navigate(url, tab=tab, add_history=not incognito)
+        else:
+            self._render_new_tab(tab)
+        self._sync_toolbar()
+
+    def _close_tab(self, index: int):
+        if self.tabs.count() == 1:
+            self._new_tab(self.settings.home_url)
+        widget = self.tabs.widget(index)
+        self.tabs.removeTab(index)
+        if widget:
+            widget.deleteLater()
+        self._sync_toolbar()
+
+    def _current_tab(self) -> Optional[BrowserTab]:
+        widget = self.tabs.currentWidget()
+        if widget is None:
+            return None
+        return widget.property("browser_tab")
 
     def _on_go(self):
-        url = self.url_input.text().strip()
-        if not url:
-            QMessageBox.warning(self.window, "Missing URL", "Please enter a URL.")
+        self._navigate(self._resolve_address(self.url_input.text().strip()))
+
+    def _resolve_address(self, value: str) -> str:
+        if not value:
+            return self.settings.home_url
+        if value.startswith("internal:"):
+            return value
+        parsed = urlparse(value if "://" in value else f"http://{value}")
+        host = parsed.hostname or ""
+        if parsed.scheme in {"http", "https"} and host and (
+            "." in host or host == "localhost" or self._is_ipv4(host)
+        ):
+            return parsed.geturl()
+        if " " in value:
+            return self.settings.search_url.replace("{query}", quote_plus(value))
+        return self.settings.search_url.replace("{query}", quote_plus(value))
+
+    def _navigate(
+        self,
+        url: str,
+        tab: Optional[BrowserTab] = None,
+        add_history: bool = True,
+        record_navigation: bool = True,
+    ):
+        tab = tab or self._current_tab()
+        if tab is None:
             return
-        self._navigate(url)
+
+        start = time.time()
+        event = NetworkEvent(url=url, dns_server=f"{self.settings.dns_host}:{self.settings.dns_port}")
+        self._set_status("Loading...")
+
+        try:
+            if url.startswith("internal:home"):
+                self._render_new_tab(tab)
+                if record_navigation and tab.current_url and tab.current_url != url:
+                    tab.back_stack.append(tab.current_url)
+                    tab.forward_stack.clear()
+                tab.current_url = "internal:home"
+                tab.title = "New Tab"
+                self._update_tab_label(tab)
+                self._set_status("Ready.")
+                return
+
+            if url.startswith("internal:"):
+                self._handle_internal_url(url, tab, record_navigation=record_navigation)
+                return
+
+            try:
+                parsed = parse_url(url)
+            except URLParseError as exc:
+                event.error = str(exc)
+                self._record_event(event)
+                self._render_error(tab, "Invalid URL", str(exc))
+                return
+
+            event.url = parsed.raw
+            event.host = parsed.host
+            event.path = parsed.path
+
+            if self._is_ipv4(parsed.host):
+                dns_ip = parsed.host
+                dns_from_cache = False
+                dns_ttl_remaining = None
+            else:
+                try:
+                    dns_result = self.dns_client.resolve(parsed.host)
+                except DNSError as exc:
+                    event.status = "404 Not Found"
+                    event.error = str(exc)
+                    self._record_event(event)
+                    self._render_error(tab, "404 Not Found", str(exc), code=404)
+                    return
+                dns_ip = dns_result.ip
+                dns_from_cache = dns_result.from_cache
+                dns_ttl_remaining = self._ttl_remaining(dns_result.expire_at)
+
+            event.dns_ip = dns_ip
+            event.dns_from_cache = dns_from_cache
+            event.dns_ttl_remaining = dns_ttl_remaining
+            http_port = parsed.port if parsed.port not in (80, 443) else self.settings.http_default_port
+            event.endpoint = f"{dns_ip}:{http_port}"
+
+            request_headers = self._request_headers(parsed.host, tab)
+            event.request_headers = dict(request_headers)
+            request_path = self._request_path(parsed.raw, parsed.path)
+            try:
+                response = self.http_client.get(
+                    ip=dns_ip,
+                    port=http_port,
+                    path=request_path,
+                    host=parsed.host,
+                    extra_headers=request_headers,
+                )
+            except HTTPError as exc:
+                event.status = self._http_error_status(str(exc))
+                event.error = str(exc)
+                self._record_event(event)
+                self._render_error(tab, event.status, str(exc), code=self._status_code(event.status))
+                return
+
+            self._store_cookies(parsed.host, response, tab)
+            event.status = f"{response.status_code} {response.status_text}".strip()
+            event.response_headers = dict(response.headers)
+            event.duration_ms = int((time.time() - start) * 1000)
+            tab.last_response = response
+            tab.last_event = event
+            self._render_response(tab, response, dns_ip, http_port, request_path)
+            self._record_event(event)
+
+            if record_navigation and tab.current_url and tab.current_url != parsed.raw:
+                tab.back_stack.append(tab.current_url)
+                tab.forward_stack.clear()
+            tab.current_url = parsed.raw
+            tab.title = self._title_for(parsed.host, tab.incognito)
+            self._update_tab_label(tab)
+            if add_history and not tab.incognito:
+                self._add_history(parsed.raw)
+            self._save_state()
+            self._set_status(f"{event.status} | {event.duration_ms}ms")
+        finally:
+            self._refresh_all()
+            self._sync_toolbar()
+
+    def _render_response(self, tab: BrowserTab, response: HTTPResponse, ip: str, port: int, path: str):
+        content_type = response.headers.get("Content-Type", "").lower()
+        base_url = QUrl(f"http://{ip}:{port}{path}")
+        if response.is_ok and "text/html" in content_type:
+            tab.view.setHtml(response.body, base_url)
+        elif response.is_ok:
+            self._render_download_page(tab, response)
+        else:
+            title = f"{response.status_code} {response.status_text}".strip()
+            self._render_error(tab, title or "HTTP Error", response.body[:3000], code=response.status_code)
+
+    def _render_new_tab(self, tab: BrowserTab):
+        logo_path = Path(__file__).resolve().parents[3] / "watercat.png"
+        logo_src = self._image_data_uri(logo_path)
+        shortcuts = "".join(
+            "<div class='shortcut-wrap'><a class='shortcut' href='{url}'><span>{letter}</span><b>{label}</b></a>"
+            "<a class='shortcut-delete' href='internal:delete-shortcut?url={encoded}'>Delete</a></div>".format(
+                url=html.escape(self._shortcut_url(item)),
+                encoded=quote_plus(self._shortcut_url(item)),
+                letter=html.escape(self._shortcut_label(item)[:1].upper() or "W"),
+                label=html.escape(self._shortcut_label(item)),
+            )
+            for item in self.shortcuts[:10]
+        )
+        body = f"""
+        <main class="home">
+          <div class="brand">
+            {"<img src='" + html.escape(logo_src) + "'>" if logo_src else "<h1>WaterCat</h1>"}
+          </div>
+          <form class="home-search" action="internal:go" method="get">
+            <input name="q" autofocus placeholder="Search with {html.escape(self.settings.search_engine.title())} or enter address">
+          </form>
+          <section class="shortcuts">
+            {shortcuts}
+            <form class="shortcut-add" action="internal:add-shortcut" method="get">
+              <input name="name" placeholder="Shortcut name">
+              <input name="url" placeholder="Add shortcut URL">
+              <button type="submit">Add Shortcut</button>
+            </form>
+          </section>
+        </main>
+        """
+        tab.view.setHtml(
+            self._page_html(
+                "New Tab",
+                body,
+            )
+        )
+
+    def _render_search_page(self, tab: BrowserTab, url: str):
+        query = ""
+        if "q=" in url:
+            query = unquote_plus(url.split("q=", 1)[1])
+        matches = [
+            item
+            for item in self.bookmarks + [entry["url"] for entry in self.history]
+            if query.lower() in item.lower()
+        ][:12]
+        links = "".join(
+            f"<li><a href='{html.escape(item)}'>{html.escape(item)}</a></li>"
+            for item in matches
+        )
+        if not links:
+            links = "<li>No local bookmark/history matches.</li>"
+        engine_url = self._engine_search_url(query)
+        engine_results = "".join(
+            f"<div class='result'><b>{html.escape(title)}</b><p>{html.escape(url)}</p></div>"
+            for title, url in self._external_search_results(query)
+        )
+        body = (
+            f"<h1>Search</h1><p><b>{html.escape(query)}</b></p>"
+            f"<p>Search engine: <b>{html.escape(self.settings.search_engine.title())}</b></p>"
+            f"<div class='result'><b>{html.escape(self.settings.search_engine.title())} results page</b>"
+            f"<p>{html.escape(engine_url)}</p></div>"
+            f"{engine_results}"
+            "<p>This browser shows third-party search result links without resolving/opening them through custom DNS.</p>"
+            f"<h2>Local matches</h2><ul>{links}</ul>"
+        )
+        tab.view.setHtml(self._page_html("Search", body))
+
+    def _render_error(self, tab: BrowserTab, title: str, message: str, code: int = 500):
+        tab.view.setHtml(
+            self._page_html(
+                title,
+                "<section class='error-page'>"
+                f"<div class='error-code'>{code}</div>"
+                f"<h1>{html.escape(title)}</h1>"
+                f"<pre>{html.escape(message)}</pre>"
+                "<p class='hint'>Check the DNS record, server IP, port, or whether the HTTP server is running.</p>"
+                "</section>",
+                error=True,
+            )
+        )
+        tab.title = title
+        self._update_tab_label(tab)
+        self._set_status(title)
+
+    def _render_download_page(self, tab: BrowserTab, response: HTTPResponse):
+        size = len(response.body_bytes)
+        content_type = html.escape(response.headers.get("Content-Type", "application/octet-stream"))
+        tab.view.setHtml(
+            self._page_html(
+                "Download ready",
+                f"<h1>Download ready</h1><p>{size} bytes</p><p>{content_type}</p>"
+                "<p>Use Menu > Download to save this response.</p>",
+            )
+        )
+
+    def _open_settings_page(self):
+        self._show_settings_tab()
+
+    def _show_settings_tab(self):
+        self._new_tab("", False)
+        tab = self._current_tab()
+        if not tab:
+            return
+        body = f"""
+        <h1>Settings</h1>
+        <form class="settings-form" action="internal:save-settings" method="get">
+          <label>Theme
+            <select name="theme">
+              <option value="light" {'selected' if self.settings.theme == 'light' else ''}>Light</option>
+              <option value="dark" {'selected' if self.settings.theme == 'dark' else ''}>Dark</option>
+            </select>
+          </label>
+          <label>Font size <input type="number" min="12" max="24" name="font_size" value="{self.settings.font_size}"></label>
+          <label>Search engine
+            <select name="search_engine">
+              <option value="google" {'selected' if self.settings.search_engine == 'google' else ''}>Google</option>
+              <option value="bing" {'selected' if self.settings.search_engine == 'bing' else ''}>Bing</option>
+            </select>
+          </label>
+          <button type="submit">Save Settings</button>
+        </form>
+        <section class="settings-readonly">
+          <h2>Connection</h2>
+          <p><b>DNS:</b> {html.escape(self.settings.dns_host)}:{self.settings.dns_port}</p>
+          <p><b>HTTP default port:</b> {self.settings.http_default_port}</p>
+          <p><b>Home:</b> {html.escape(self.settings.home_url)}</p>
+          <p><b>Search URL:</b> {html.escape(self.settings.search_url)}</p>
+          <p><b>DNS cache:</b> {'enabled' if self.settings.enable_dns_cache else 'disabled'}</p>
+        </section>
+        """
+        tab.view.setHtml(self._page_html("Settings", body))
+        tab.title = "Settings"
+        self._update_tab_label(tab)
+
+    def _page_html(self, title: str, body: str, error: bool = False) -> str:
+        dark = self.settings.theme == "dark"
+        text = "#e5e7eb" if dark else "#0f172a"
+        background = "#111827" if dark else "#ffffff"
+        panel = "#0b1220" if dark else "#f8fafc"
+        border = "#374151" if dark else "#cbd5e1"
+        muted = "#9ca3af" if dark else "#64748b"
+        shortcut = "#1f2937" if dark else "#f1f5f9"
+        color = "#f87171" if error and dark else ("#b91c1c" if error else text)
+        return (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            f"<title>{html.escape(title)}</title>"
+            f"<style>body{{font-family:system-ui,Segoe UI,sans-serif;margin:0;color:{text};background:{background};font-size:{self.settings.font_size}px}}"
+            "body>h1,body>p,body>h2,body>ul,body>pre,body>.result{margin-left:48px;margin-right:48px}"
+            "body>h1{margin-top:48px}"
+            f"h1{{color:{color}}}pre{{white-space:pre-wrap;background:{panel};border:1px solid {border};padding:16px;border-radius:8px}}"
+            f"a{{color:#2563eb}}.home{{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:34px;padding-bottom:80px}}"
+            ".brand{display:flex;align-items:center;justify-content:center}.brand img{width:min(520px,70vw);height:auto;object-fit:contain}.brand h1{font-size:44px;margin:0}"
+            f".home-search{{width:min(760px,70vw);background:{panel};border:1px solid {border};box-shadow:0 12px 34px rgba(15,23,42,.16);border-radius:14px;padding:10px 14px;color:{muted}}}"
+            f".home-search input{{width:100%;box-sizing:border-box;border:0;outline:0;background:transparent;color:{text};font-size:18px;padding:10px}}"
+            ".shortcuts{display:flex;gap:28px;flex-wrap:wrap;justify-content:center;max-width:900px}"
+            f".shortcut-wrap{{width:106px;text-align:center}}.shortcut{{display:block;text-decoration:none;color:{text}}}.shortcut span{{display:grid;place-items:center;width:72px;height:72px;margin:0 auto 10px;background:{shortcut};border:1px solid {border};border-radius:18px;font-size:30px}}"
+            f".shortcut b{{font-size:14px;font-weight:600}}.shortcut-delete{{display:block;margin-top:6px;font-size:12px;color:{muted};text-decoration:none}}"
+            f".shortcut-add{{width:190px;background:{panel};border:1px solid {border};border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px}}.shortcut-add input,.settings-form input,.settings-form select{{background:{background};color:{text};border:1px solid {border};border-radius:8px;padding:8px}}.shortcut-add button,.settings-form button{{background:#2563eb;color:white;border:0;border-radius:8px;padding:9px}}"
+            f".settings-form,.settings-readonly{{margin:24px 48px;background:{panel};border:1px solid {border};border-radius:12px;padding:18px;max-width:760px;display:flex;flex-direction:column;gap:14px}}.settings-form label{{display:flex;justify-content:space-between;gap:18px;align-items:center}}"
+            f".data-table{{margin:24px 48px;border-collapse:collapse;width:calc(100% - 96px);background:{panel};border:1px solid {border};border-radius:12px;overflow:hidden}}.data-table th,.data-table td{{border-bottom:1px solid {border};padding:12px;text-align:left}}.data-table th{{color:{muted};font-size:13px;text-transform:uppercase;letter-spacing:.04em}}"
+            f".muted{{color:{muted}}}.result{{background:{panel};border:1px solid {border};border-radius:10px;padding:16px;margin-top:16px}}"
+            f".error-page{{margin:64px 48px;max-width:900px}}.error-code{{font-size:72px;font-weight:800;color:{color};line-height:1}}.hint{{color:{muted}}}</style>"
+            "<script>"
+            "document.addEventListener('submit',function(e){"
+            "var f=e.target;if(!f.action||!f.action.startsWith('internal:'))return;"
+            "e.preventDefault();var p=new URLSearchParams(new FormData(f));"
+            "window.location.href=f.action+'?'+p.toString();"
+            "});"
+            "</script>"
+            "</head><body>"
+            f"{body}</body></html>"
+        )
+
+    def _request_headers(self, host: str, tab: BrowserTab) -> dict[str, str]:
+        cookies = tab.cookies if tab.incognito else self.cookies
+        domain_cookies = cookies.get(host, {})
+        if not domain_cookies:
+            return {}
+        cookie_value = "; ".join(f"{name}={value}" for name, value in domain_cookies.items())
+        return {"Cookie": cookie_value}
+
+    def _store_cookies(self, host: str, response: HTTPResponse, tab: BrowserTab):
+        if not response.set_cookie_headers:
+            return
+        jar = tab.cookies if tab.incognito else self.cookies
+        jar.setdefault(host, {})
+        for header in response.set_cookie_headers:
+            pair = header.split(";", 1)[0]
+            if "=" in pair:
+                name, value = pair.split("=", 1)
+                jar[host][name.strip()] = value.strip()
+        if not tab.incognito:
+            self._save_state()
+
+    def _download_current(self):
+        tab = self._current_tab()
+        if not tab or not tab.last_response:
+            QMessageBox.information(self.window, "Download", "No loaded response to save.")
+            return
+        filename = self._download_filename(tab)
+        path, _ = QFileDialog.getSaveFileName(self.window, "Save response", filename)
+        if not path:
+            return
+        data = tab.last_response.body_bytes or tab.last_response.body.encode("utf-8")
+        try:
+            Path(path).write_bytes(data)
+        except OSError as exc:
+            QMessageBox.critical(self.window, "Download failed", str(exc))
+            return
+        self._set_status(f"Saved {path}")
+
+    def _download_filename(self, tab: BrowserTab) -> str:
+        if tab.last_response:
+            disposition = tab.last_response.headers.get("Content-Disposition", "")
+            match = re.search(r'filename="?([^";]+)"?', disposition)
+            if match:
+                return match.group(1)
+        if tab.current_url:
+            tail = tab.current_url.rstrip("/").rsplit("/", 1)[-1]
+            if tail and "." in tail:
+                return tail
+        return "download.html"
+
+    def _bookmark_current(self):
+        tab = self._current_tab()
+        if not tab or not tab.current_url:
+            return
+        if tab.current_url not in self.bookmarks:
+            self.bookmarks.insert(0, tab.current_url)
+            self._save_state()
+        self._refresh_all()
+
+    def _add_shortcut_current(self):
+        tab = self._current_tab()
+        if not tab or not tab.current_url or tab.current_url.startswith("internal:"):
+            QMessageBox.information(self.window, "Shortcut", "Open a web page before adding a shortcut.")
+            return
+        if tab.current_url not in self.shortcuts:
+            self.shortcuts.insert(0, tab.current_url)
+            self.shortcuts = self.shortcuts[:12]
+            self._save_state()
+        self._render_new_tab(tab) if tab.current_url == "internal:home" else None
+        self._set_status("Shortcut added.")
+
+    def _show_history_page(self):
+        self._new_tab("", False)
+        tab = self._current_tab()
+        if not tab:
+            return
+        rows = "".join(
+            "<tr><td>{time}</td><td><a href='{url}'>{url}</a></td></tr>".format(
+                time=html.escape(entry.get("visited_at", "")),
+                url=html.escape(entry.get("url", "")),
+            )
+            for entry in self.history
+        ) or "<tr><td colspan='2'>No history yet.</td></tr>"
+        body = (
+            "<h1>History</h1>"
+            "<table class='data-table'><thead><tr><th>Visited at</th><th>URL</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+        )
+        tab.view.setHtml(self._page_html("History", body))
+        tab.current_url = "internal:history"
+        tab.title = "History"
+        self._update_tab_label(tab)
+
+    def _show_bookmarks_page(self):
+        self._new_tab("", False)
+        tab = self._current_tab()
+        if not tab:
+            return
+        links = "".join(
+            f"<li><a href='{html.escape(url)}'>{html.escape(url)}</a></li>"
+            for url in self.bookmarks
+        ) or "<li>No bookmarks yet.</li>"
+        tab.view.setHtml(self._page_html("Bookmarks", f"<h1>Bookmarks</h1><ul>{links}</ul>"))
+        tab.current_url = "internal:bookmarks"
+        tab.title = "Bookmarks"
+        self._update_tab_label(tab)
+
+    def _print_current(self):
+        tab = self._current_tab()
+        if not tab:
+            return
+        path, _ = QFileDialog.getSaveFileName(self.window, "Print to PDF", "page.pdf")
+        if path:
+            tab.view.page().printToPdf(path)
+            self._set_status(f"Printed to {path}")
+
+    def _show_context_menu(self, view: QWebEngineView, pos):
+        tab = view.property("browser_tab")
+        menu = QMenu(view)
+        inspect_action = menu.addAction("Inspect HTML")
+        reload_action = menu.addAction("Reload")
+        chosen = menu.exec(view.mapToGlobal(pos))
+        if chosen == inspect_action and tab:
+            self.devtools_frame.show()
+            inspector_index = self.devtools_tabs.indexOf(self.inspector_text)
+            if inspector_index >= 0:
+                self.devtools_tabs.setCurrentIndex(inspector_index)
+            view.page().toHtml(
+                lambda source: self.inspector_text.setHtml(self._highlight_html(source))
+            )
+        elif chosen == reload_action and tab:
+            self._navigate(tab.current_url, tab=tab, add_history=False, record_navigation=False)
 
     def _go_back(self):
-        if not self.back_stack:
-            return
-        target = self.back_stack.pop()
-        if self.current_url:
-            self.forward_stack.append(self.current_url)
-        self._navigate(target, add_to_history=False, record_navigation=False)
+        tab = self._current_tab()
+        if tab and tab.back_stack:
+            target = tab.back_stack.pop()
+            if tab.current_url:
+                tab.forward_stack.append(tab.current_url)
+            self._navigate(target, tab=tab, add_history=False, record_navigation=False)
 
     def _go_forward(self):
-        if not self.forward_stack:
-            return
-        target = self.forward_stack.pop()
-        if self.current_url:
-            self.back_stack.append(self.current_url)
-        self._navigate(target, add_to_history=False, record_navigation=False)
+        tab = self._current_tab()
+        if tab and tab.forward_stack:
+            target = tab.forward_stack.pop()
+            if tab.current_url:
+                tab.back_stack.append(tab.current_url)
+            self._navigate(target, tab=tab, add_history=False, record_navigation=False)
 
     def _reload(self):
-        if self.current_url:
-            self._navigate(self.current_url, add_to_history=False, record_navigation=False)
+        tab = self._current_tab()
+        if tab and tab.current_url:
+            self._navigate(tab.current_url, tab=tab, add_history=False, record_navigation=False)
+
+    def _toggle_devtools(self):
+        self.devtools_frame.setVisible(not self.devtools_frame.isVisible())
+        self._refresh_all()
+
+    def _handle_internal_url(
+        self,
+        url: str,
+        tab: Optional[BrowserTab] = None,
+        record_navigation: bool = True,
+    ):
+        tab = tab or self._current_tab()
+        if tab is None:
+            return
+        parsed = urlparse(url)
+        action = parsed.path or parsed.netloc
+        values = parse_qs(parsed.query)
+
+        if action == "go":
+            target = values.get("q", [""])[0]
+            self._navigate(self._resolve_address(target), tab=tab, record_navigation=record_navigation)
+            return
+        if action == "search":
+            self._render_search_page(tab, url)
+            self._mark_internal_tab(tab, url, "Search", record_navigation)
+            return
+        if action == "home":
+            self._render_new_tab(tab)
+            self._mark_internal_tab(tab, "internal:home", "New Tab", record_navigation)
+            return
+        if action == "add-shortcut":
+            target = values.get("url", [""])[0].strip()
+            name = values.get("name", [""])[0].strip()
+            if target:
+                target_url = self._resolve_address(target)
+                if target_url not in [self._shortcut_url(item) for item in self.shortcuts]:
+                    self.shortcuts.insert(
+                        0,
+                        {
+                            "name": name or self._short_label(target_url),
+                            "url": target_url,
+                        },
+                    )
+                    self.shortcuts = self.shortcuts[:12]
+                    self._save_state()
+            self._render_new_tab(tab)
+            self._mark_internal_tab(tab, "internal:home", "New Tab", record_navigation)
+            return
+        if action == "delete-shortcut":
+            target = values.get("url", [""])[0]
+            before = len(self.shortcuts)
+            self.shortcuts = [
+                item for item in self.shortcuts if self._shortcut_url(item) != target
+            ]
+            if len(self.shortcuts) != before:
+                self._save_state()
+            self._render_new_tab(tab)
+            self._mark_internal_tab(tab, "internal:home", "New Tab", record_navigation)
+            return
+        if action == "save-settings":
+            self._apply_settings_from_query(values)
+            self._show_settings_tab()
+            return
+
+    def _mark_internal_tab(
+        self,
+        tab: BrowserTab,
+        url: str,
+        title: str,
+        record_navigation: bool = True,
+    ):
+        if record_navigation and tab.current_url and tab.current_url != url:
+            tab.back_stack.append(tab.current_url)
+            tab.forward_stack.clear()
+        tab.current_url = url
+        tab.title = title
+        self._update_tab_label(tab)
+        self._sync_toolbar()
+
+    def _apply_settings_from_query(self, values: dict[str, list[str]]):
+        theme = values.get("theme", [self.settings.theme])[0]
+        font_size = values.get("font_size", [str(self.settings.font_size)])[0]
+        search_engine = values.get("search_engine", [self.settings.search_engine])[0]
+        self.settings.theme = self._normalize_theme(theme)
+        self.settings.font_size = max(12, min(24, self._as_int(font_size, self.settings.font_size)))
+        self.settings.search_engine = self._normalize_search_engine(search_engine)
+        self._apply_style()
+        self._save_state()
+
+    def _toggle_theme(self):
+        self.settings.theme = "light" if self.settings.theme == "dark" else "dark"
+        self._apply_style()
+        self._save_state()
 
     def _open_list_item(self, item: QListWidgetItem):
         url = item.data(Qt.ItemDataRole.UserRole) or item.text()
         self._navigate(url)
 
-    def _add_current_bookmark(self):
-        url = self.current_url or self.url_input.text().strip()
-        if not url:
-            return
-        if url not in self.bookmarks:
-            self.bookmarks.insert(0, url)
-            self._save_state()
-            self._refresh_bookmarks()
-            self._set_status(f"Bookmarked {url}")
-        else:
-            self._set_status("Bookmark already exists.")
-
-    def _remove_selected_bookmark(self):
-        item = self.bookmark_list.currentItem()
-        if item is None:
-            return
-        url = item.data(Qt.ItemDataRole.UserRole) or item.text()
-        if url in self.bookmarks:
-            self.bookmarks.remove(url)
-            self._save_state()
-            self._refresh_bookmarks()
-            self._set_status(f"Removed bookmark {url}")
-
-    def _clear_history(self):
-        self.history.clear()
-        self._save_state()
-        self._refresh_history()
-        self._set_status("History cleared.")
-
-    def _clear_dns_cache(self):
-        self.dns_client.clear_cache()
-        self._refresh_cache()
-        self._set_status("DNS cache cleared.")
-
-    def _open_settings(self):
-        dialog = SettingsDialog(self.window, self.settings)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        self.settings = dialog.settings()
-        self.dns_client = self._make_dns_client()
-        self._save_state()
-        self._refresh_cache()
-        self._set_status(
-            f"DNS server set to {self.settings.dns_host}:{self.settings.dns_port}"
-        )
-
-    def _navigate(
-        self,
-        url: str,
-        add_to_history: bool = True,
-        record_navigation: bool = True,
-    ):
-        self._set_loading(True)
-        self._clear_log()
-        start = time.time()
-        event = NetworkEvent(
-            url=url,
-            host="",
-            path="",
-            dns_server=f"{self.settings.dns_host}:{self.settings.dns_port}",
-        )
-
-        try:
-            self._log(f"Navigate {url}", "info")
-            try:
-                parsed = parse_url(url)
-            except URLParseError as exc:
-                event.error = str(exc)
-                self._add_network_event(event)
-                self._show_error("Invalid URL", str(exc))
-                return
-
-            normalized_url = parsed.raw
-            self.url_input.setText(normalized_url)
-            event.url = normalized_url
-            event.host = parsed.host
-            event.path = parsed.path
-
-            self._log(f"DNS {parsed.host} via {event.dns_server}", "info")
-            try:
-                dns_result = self.dns_client.resolve(parsed.host)
-            except DNSError as exc:
-                event.error = str(exc)
-                self._add_network_event(event)
-                self._show_error("DNS Error", str(exc))
-                return
-
-            event.dns_ip = dns_result.ip
-            event.dns_from_cache = dns_result.from_cache
-            event.dns_ttl_remaining = self._ttl_remaining(dns_result.expire_at)
-            cache_note = "cache" if dns_result.from_cache else "network"
-            self._log(f"Resolved {dns_result.domain} -> {dns_result.ip} ({cache_note})", "ok")
-
-            http_port = parsed.port if parsed.port not in (80, 443) else self.settings.http_default_port
-            event.http_endpoint = f"{dns_result.ip}:{http_port}"
-            event.request_headers = {
-                "Host": parsed.host,
-                "User-Agent": "MiniWebBrowser/1.0",
-                "Accept": "text/html,*/*",
-                "Connection": "close",
-            }
-
-            self._log(f"HTTP GET {parsed.path} -> {event.http_endpoint}", "info")
-            try:
-                response = self.http_client.get(
-                    ip=dns_result.ip,
-                    port=http_port,
-                    path=parsed.path,
-                    host=parsed.host,
-                )
-            except HTTPError as exc:
-                event.error = str(exc)
-                self._add_network_event(event)
-                self._show_error("HTTP Error", str(exc))
-                return
-
-            event.status = f"{response.status_code} {response.status_text}".strip()
-            event.response_headers = dict(response.headers)
-            self._log(event.status, "ok" if response.is_ok else "error")
-
-            elapsed = time.time() - start
-            event.duration_ms = int(elapsed * 1000)
-            self._render_content(response, dns_result.ip, http_port, parsed.path)
-            self._add_network_event(event)
-
-            if record_navigation and self.current_url and self.current_url != normalized_url:
-                self.back_stack.append(self.current_url)
-                self.forward_stack.clear()
-
-            self.current_url = normalized_url
-            if add_to_history:
-                self._add_history(normalized_url)
-
-            self._set_status(
-                f"{event.status} | {len(response.body)} chars | {event.duration_ms}ms"
-            )
-        finally:
-            self._refresh_cache()
-            self._update_navigation_state()
-            self._set_loading(False)
-
-    def _render_content(self, response, ip: str, port: int, path: str):
-        content_type = response.headers.get("Content-Type", "").lower()
-        base_url = QUrl(f"http://{ip}:{port}{path}")
-
-        if response.is_ok and "text/html" in content_type:
-            self.web_view.setHtml(response.body, base_url)
-            return
-
-        title = f"{response.status_code} {response.status_text}" if not response.is_ok else "Response Body"
-        escaped_body = html.escape(response.body)
-        self.web_view.setHtml(
-            "<html><body style='font-family:monospace; padding:16px;'>"
-            f"<h3>{html.escape(title)}</h3>"
-            f"<pre>{escaped_body}</pre>"
-            "</body></html>"
-        )
-
-    def _show_error(self, title: str, message: str):
-        self.web_view.setHtml(
-            "<html><body style='font-family:sans-serif; padding:16px;'>"
-            f"<h3>{html.escape(title)}</h3>"
-            f"<pre>{html.escape(message)}</pre>"
-            "</body></html>"
-        )
-        self._log(message, "error")
-        self._set_status(title)
-
-    def _add_history(self, url: str):
-        if url in self.history:
-            self.history.remove(url)
-        self.history.insert(0, url)
-        self.history = self.history[:100]
-        self._save_state()
-        self._refresh_history()
-
-    def _add_network_event(self, event: NetworkEvent):
-        if event.duration_ms == 0:
-            event.duration_ms = 0
+    def _record_event(self, event: NetworkEvent):
         self.network_events.insert(0, event)
-        self.network_events = self.network_events[:100]
+        self.network_events = self.network_events[:200]
+
+    def _refresh_all(self):
         self._refresh_network_table()
-
-    def _show_selected_network_event(self):
-        selected = self.network_table.selectedItems()
-        if not selected:
-            return
-        row = selected[0].row()
-        if row >= len(self.network_events):
-            return
-        event = self.network_events[row]
-        detail = {
-            "url": event.url,
-            "host": event.host,
-            "path": event.path,
-            "dns_server": event.dns_server,
-            "dns_ip": event.dns_ip,
-            "dns_from_cache": event.dns_from_cache,
-            "dns_ttl_remaining": event.dns_ttl_remaining,
-            "http_endpoint": event.http_endpoint,
-            "status": event.status,
-            "duration_ms": event.duration_ms,
-            "error": event.error,
-            "request_headers": event.request_headers,
-            "response_headers": event.response_headers,
-        }
-        self.detail_text.setPlainText(json.dumps(detail, indent=2))
-
-    def _refresh_all_lists(self):
-        self._refresh_history()
-        self._refresh_bookmarks()
-        self._refresh_cache()
-        self._refresh_network_table()
-        self._update_navigation_state()
-
-    def _refresh_history(self):
-        self.history_list.clear()
-        for url in self.history:
-            item = QListWidgetItem(url)
-            item.setData(Qt.ItemDataRole.UserRole, url)
-            self.history_list.addItem(item)
-
-    def _refresh_bookmarks(self):
-        self.bookmark_list.clear()
-        for url in self.bookmarks:
-            item = QListWidgetItem(url)
-            item.setData(Qt.ItemDataRole.UserRole, url)
-            self.bookmark_list.addItem(item)
-
-    def _refresh_cache(self):
-        cache = self.dns_client.get_cache()
-        self.cache_table.setRowCount(0)
-        now = time.time()
-        for row, (domain, entry) in enumerate(cache.items()):
-            expire_at = entry.get("expire_at")
-            ttl = ""
-            expires = ""
-            if isinstance(expire_at, (int, float)):
-                ttl = f"{max(0, int(expire_at - now))}s"
-                expires = time.strftime("%H:%M:%S", time.localtime(expire_at))
-
-            self.cache_table.insertRow(row)
-            values = [domain, entry.get("ip", ""), ttl, expires]
-            for col, value in enumerate(values):
-                self.cache_table.setItem(row, col, QTableWidgetItem(str(value)))
+        self._refresh_cookies_table()
+        self._refresh_inspector()
+        self._refresh_console()
+        self._refresh_side_lists()
 
     def _refresh_network_table(self):
         self.network_table.setRowCount(0)
@@ -597,7 +1112,7 @@ class BrowserApp:
                 event.dns_ip or "",
                 "yes" if event.dns_from_cache else "no",
                 f"{event.dns_ttl_remaining}s" if event.dns_ttl_remaining is not None else "",
-                event.http_endpoint,
+                event.endpoint,
                 event.status,
                 f"{event.duration_ms}ms" if event.duration_ms else "",
                 event.error,
@@ -605,29 +1120,121 @@ class BrowserApp:
             for col, value in enumerate(values):
                 self.network_table.setItem(row, col, QTableWidgetItem(value))
 
-    def _update_navigation_state(self):
-        self.back_action.setEnabled(bool(self.back_stack))
-        self.forward_action.setEnabled(bool(self.forward_stack))
-        self.reload_action.setEnabled(bool(self.current_url))
+    def _refresh_cookies_table(self):
+        self.cookies_table.setRowCount(0)
+        row = 0
+        for domain, values in self.cookies.items():
+            for name, value in values.items():
+                self.cookies_table.insertRow(row)
+                for col, text in enumerate([domain, name, value]):
+                    self.cookies_table.setItem(row, col, QTableWidgetItem(text))
+                row += 1
 
-    def _clear_log(self):
-        self.log_text.clear()
+    def _refresh_side_lists(self):
+        self.history_list.clear()
+        for entry in self.history:
+            url = entry.get("url", "")
+            item = QListWidgetItem(f"{entry.get('visited_at', '')}  {url}")
+            item.setData(Qt.ItemDataRole.UserRole, url)
+            self.history_list.addItem(item)
 
-    def _log(self, msg: str, tag: str = "dim"):
-        color = self.LOG_COLORS.get(tag, self.LOG_COLORS["dim"])
-        self.log_text.moveCursor(QTextCursor.MoveOperation.End)
-        self.log_text.insertHtml(
-            f'<span style="color:{color}; white-space:pre;">{html.escape(msg)}</span><br>'
+        self.bookmark_list.clear()
+        for url in self.bookmarks:
+            item = QListWidgetItem(url)
+            item.setData(Qt.ItemDataRole.UserRole, url)
+            self.bookmark_list.addItem(item)
+
+    def _show_selected_event(self):
+        selected = self.network_table.selectedItems()
+        if not selected:
+            return
+        row = selected[0].row()
+        if row >= len(self.network_events):
+            return
+        event = self.network_events[row]
+        self.details_text.setHtml(self._highlight_json(event.__dict__))
+
+    def _refresh_inspector(self):
+        tab = self._current_tab()
+        if not tab:
+            return
+        tab.view.page().toHtml(
+            lambda source: self.inspector_text.setHtml(self._highlight_html(source))
         )
-        self.log_text.moveCursor(QTextCursor.MoveOperation.End)
 
-    def _set_status(self, msg: str):
-        self.status_bar.showMessage(msg)
+    def _refresh_console(self):
+        lines = []
+        for event in self.network_events[:80]:
+            level = "ERROR" if event.error else "INFO"
+            status = event.status or "-"
+            klass = "err" if event.error else "info"
+            lines.append(
+                f"<div class='{klass}'><b>[{level}]</b> {html.escape(status)} "
+                f"<span>{html.escape(event.url)}</span> {html.escape(event.error)}</div>"
+            )
+        self.console_text.setHtml(
+            "<style>body{font-family:monospace}.err{color:#ef4444}.info{color:#22c55e}span{color:#60a5fa}</style>"
+            + "\n".join(lines)
+        )
 
-    def _set_loading(self, loading: bool):
-        self.go_action.setEnabled(not loading)
-        if loading:
-            self._set_status("Loading...")
+    def _add_history(self, url: str):
+        self.history = [entry for entry in self.history if entry.get("url") != url]
+        self.history.insert(0, {"url": url, "visited_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        self.history = self.history[:300]
+
+    def _sync_toolbar(self):
+        tab = self._current_tab()
+        if not tab:
+            return
+        if tab.current_url == "internal:home":
+            self.url_input.clear()
+        elif tab.current_url.startswith("internal:search?"):
+            query = unquote_plus(tab.current_url.split("q=", 1)[1]) if "q=" in tab.current_url else ""
+            self.url_input.setText(query)
+        else:
+            self.url_input.setText(tab.current_url)
+        self.back_action.setEnabled(bool(tab.back_stack))
+        self.forward_action.setEnabled(bool(tab.forward_stack))
+        self.reload_action.setEnabled(bool(tab.current_url))
+        self.download_action.setEnabled(bool(tab.last_response))
+        label = tab.title or "New Tab"
+        if tab.incognito:
+            label = f"Incognito - {label}"
+        self.window.setWindowTitle(f"{label} - Mini Web Browser")
+
+    def _update_tab_label(self, tab: BrowserTab):
+        for index in range(self.tabs.count()):
+            widget = self.tabs.widget(index)
+            if widget and widget.property("browser_tab") is tab:
+                self.tabs.setTabText(index, tab.title[:24])
+                return
+
+    def _make_dns_client(self) -> DNSClient:
+        return DNSClient(
+            server_host=self.settings.dns_host,
+            server_port=self.settings.dns_port,
+            timeout=self.settings.dns_timeout,
+            enable_cache=self.settings.enable_dns_cache,
+        )
+
+    @staticmethod
+    def _title_for(host: str, incognito: bool) -> str:
+        return host if not incognito else f"Private {host}"
+
+    @staticmethod
+    def _short_label(url: str) -> str:
+        return url.replace("http://", "").replace("https://", "").rstrip("/")[:18] or url
+
+    @staticmethod
+    def _shortcut_url(item: Any) -> str:
+        if isinstance(item, dict):
+            return str(item.get("url", ""))
+        return str(item)
+
+    def _shortcut_label(self, item: Any) -> str:
+        if isinstance(item, dict) and item.get("name"):
+            return str(item["name"])[:18]
+        return self._short_label(self._shortcut_url(item))
 
     @staticmethod
     def _ttl_remaining(expire_at: Optional[float]) -> Optional[int]:
@@ -635,20 +1242,163 @@ class BrowserApp:
             return None
         return max(0, int(expire_at - time.time()))
 
+    @staticmethod
+    def _is_ipv4(value: str) -> bool:
+        try:
+            socket.inet_aton(value)
+        except OSError:
+            return False
+        return value.count(".") == 3
+
+    @staticmethod
+    def _request_path(raw_url: str, fallback_path: str) -> str:
+        parsed = urlparse(raw_url)
+        path = parsed.path or fallback_path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        return path
+
+    def _engine_search_url(self, query: str) -> str:
+        encoded = quote_plus(query)
+        if self.settings.search_engine == "bing":
+            return f"https://www.bing.com/search?q={encoded}"
+        return f"https://www.google.com/search?q={encoded}"
+
+    def _synthetic_search_results(self, query: str) -> list[tuple[str, str]]:
+        if not query.strip():
+            return []
+        engine = self.settings.search_engine.title()
+        return [
+            (f"{engine} search for {query}", self._engine_search_url(query)),
+            (f"Images for {query}", self._engine_search_url(f"{query} images")),
+            (f"News about {query}", self._engine_search_url(f"{query} news")),
+        ]
+
+    def _external_search_results(self, query: str) -> list[tuple[str, str]]:
+        if not query.strip():
+            return []
+        search_url = self._engine_search_url(query)
+        request = Request(
+            search_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 MiniWebBrowser/1.0",
+                "Accept": "text/html,*/*",
+            },
+        )
+        try:
+            with urlopen(request, timeout=4) as response:
+                page = response.read(350000).decode("utf-8", errors="replace")
+        except Exception:
+            return self._synthetic_search_results(query)
+
+        results: list[tuple[str, str]] = []
+        for match in re.finditer(r'<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>', page, re.I | re.S):
+            url = html.unescape(match.group(1))
+            title = re.sub(r"<[^>]+>", " ", match.group(2))
+            title = html.unescape(re.sub(r"\s+", " ", title)).strip()
+            if not title or "google" in url.lower() and self.settings.search_engine == "google":
+                continue
+            if self.settings.search_engine == "bing" and "bing.com" in url.lower():
+                continue
+            if (title, url) not in results:
+                results.append((title[:120], url))
+            if len(results) >= 6:
+                break
+
+        return results or self._synthetic_search_results(query)
+
+    def _highlight_html(self, source: str) -> str:
+        escaped = html.escape(source)
+        escaped = re.sub(
+            r"(&lt;/?)([a-zA-Z0-9:-]+)",
+            r"<span style='color:#64748b'>\1</span><span style='color:#60a5fa'>\2</span>",
+            escaped,
+        )
+        escaped = re.sub(
+            r"([a-zA-Z_:][-a-zA-Z0-9_:.]*)(=)&quot;([^&]*)&quot;",
+            r"<span style='color:#c084fc'>\1</span><span style='color:#94a3b8'>\2</span><span style='color:#f59e0b'>&quot;\3&quot;</span>",
+            escaped,
+        )
+        escaped = escaped.replace("&lt;!--", "<span style='color:#22c55e'>&lt;!--")
+        escaped = escaped.replace("--&gt;", "--&gt;</span>")
+        return (
+            "<pre style='font-family:monospace;font-size:13px;line-height:1.45;"
+            "background:#1f2937;color:#d1d5db;padding:12px;margin:0;white-space:pre-wrap'>"
+            f"{escaped}</pre>"
+        )
+
+    def _highlight_json(self, value: Any) -> str:
+        text = html.escape(json.dumps(value, indent=2))
+        text = re.sub(
+            r'(&quot;[^&]+&quot;)(:)',
+            r"<span style='color:#60a5fa'>\1</span><span style='color:#94a3b8'>\2</span>",
+            text,
+        )
+        text = re.sub(
+            r": (&quot;.*?&quot;)",
+            r": <span style='color:#f59e0b'>\1</span>",
+            text,
+        )
+        return (
+            "<pre style='font-family:monospace;font-size:13px;line-height:1.45;"
+            "background:#1f2937;color:#d1d5db;padding:12px;margin:0;white-space:pre-wrap'>"
+            f"{text}</pre>"
+        )
+
+    @staticmethod
+    def _image_data_uri(path: Path) -> str:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return ""
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
+    @staticmethod
+    def _http_error_status(message: str) -> str:
+        text = message.lower()
+        if "could not connect" in text or "connection refused" in text:
+            return "404 Not Found"
+        if "timed out" in text or "did not respond" in text:
+            return "504 Gateway Timeout"
+        if "invalid http response" in text or "empty response" in text:
+            return "502 Bad Gateway"
+        return "500 Internal Browser Error"
+
+    @staticmethod
+    def _status_code(status: str) -> int:
+        try:
+            return int(status.split(" ", 1)[0])
+        except (ValueError, IndexError):
+            return 500
+
+    def _set_status(self, msg: str):
+        self.status_bar.showMessage(msg)
+
     def _load_settings(self) -> BrowserSettings:
         state = self._read_state()
-        raw_settings = state.get("settings", {})
-        if not isinstance(raw_settings, dict):
-            raw_settings = {}
+        raw = state.get("settings", {})
+        if not isinstance(raw, dict):
+            raw = {}
         return BrowserSettings(
-            dns_host=str(raw_settings.get("dns_host", DNS_HOST)),
-            dns_port=self._as_int(raw_settings.get("dns_port"), DNS_PORT),
-            dns_timeout=self._as_float(raw_settings.get("dns_timeout"), DNS_TIMEOUT),
-            http_default_port=self._as_int(
-                raw_settings.get("http_default_port"), HTTP_DEFAULT_PORT
+            dns_host=self._setting_str(raw, "dns_host", "BROWSER_DNS_HOST", DNS_HOST),
+            dns_port=self._setting_int(raw, "dns_port", "BROWSER_DNS_PORT", DNS_PORT),
+            dns_timeout=self._setting_float(raw, "dns_timeout", "BROWSER_DNS_TIMEOUT", DNS_TIMEOUT),
+            http_default_port=self._setting_int(
+                raw, "http_default_port", "BROWSER_HTTP_DEFAULT_PORT", HTTP_DEFAULT_PORT
             ),
-            enable_dns_cache=bool(raw_settings.get("enable_dns_cache", ENABLE_DNS_CACHE)),
-            home_url=str(raw_settings.get("home_url", HOME_URL)),
+            enable_dns_cache=bool(
+                self._setting_raw(raw, "enable_dns_cache", "BROWSER_ENABLE_DNS_CACHE", ENABLE_DNS_CACHE)
+            ),
+            home_url=self._setting_str(raw, "home_url", "BROWSER_HOME_URL", HOME_URL),
+            search_url=self._setting_str(raw, "search_url", "BROWSER_SEARCH_URL", SEARCH_URL),
+            theme=self._normalize_theme(
+                self._setting_str(raw, "theme", "BROWSER_THEME", BROWSER_THEME)
+            ),
+            font_size=self._setting_int(raw, "font_size", "BROWSER_FONT_SIZE", BROWSER_FONT_SIZE),
+            search_engine=self._normalize_search_engine(
+                self._setting_str(raw, "search_engine", "BROWSER_SEARCH_ENGINE", SEARCH_ENGINE)
+            ),
         )
 
     def _load_list(self, key: str, default: list[str]) -> list[str]:
@@ -657,6 +1407,51 @@ class BrowserApp:
         if not isinstance(values, list):
             return list(default)
         return [str(value) for value in values if str(value).strip()]
+
+    def _load_shortcuts(self, default: list[str]) -> list[Any]:
+        state = self._read_state()
+        values = state.get("shortcuts", default)
+        if not isinstance(values, list):
+            values = default
+        result = []
+        for item in values:
+            if isinstance(item, dict):
+                url = str(item.get("url", "")).strip()
+                name = str(item.get("name", "")).strip()
+                if url:
+                    result.append({"name": name or self._short_label(url), "url": url})
+            else:
+                url = str(item).strip()
+                if url:
+                    result.append({"name": self._short_label(url), "url": url})
+        return result
+
+    def _load_history(self) -> list[dict[str, str]]:
+        state = self._read_state()
+        values = state.get("history", [])
+        if not isinstance(values, list):
+            return []
+        result = []
+        for item in values:
+            if isinstance(item, dict):
+                url = str(item.get("url", "")).strip()
+                visited_at = str(item.get("visited_at", "")).strip()
+            else:
+                url = str(item).strip()
+                visited_at = ""
+            if url:
+                result.append({"url": url, "visited_at": visited_at})
+        return result
+
+    def _load_cookies(self) -> dict[str, dict[str, str]]:
+        values = self._read_state().get("cookies", {})
+        if not isinstance(values, dict):
+            return {}
+        result: dict[str, dict[str, str]] = {}
+        for domain, cookies in values.items():
+            if isinstance(cookies, dict):
+                result[str(domain)] = {str(k): str(v) for k, v in cookies.items()}
+        return result
 
     def _read_state(self) -> dict[str, Any]:
         try:
@@ -676,15 +1471,36 @@ class BrowserApp:
                 "http_default_port": self.settings.http_default_port,
                 "enable_dns_cache": self.settings.enable_dns_cache,
                 "home_url": self.settings.home_url,
+                "search_url": self.settings.search_url,
+                "theme": self.settings.theme,
+                "font_size": self.settings.font_size,
+                "search_engine": self.settings.search_engine,
             },
             "bookmarks": self.bookmarks,
+            "shortcuts": self.shortcuts,
             "history": self.history,
+            "cookies": self.cookies,
         }
         try:
             with open(STATE_PATH, "w", encoding="utf-8") as file_obj:
                 json.dump(data, file_obj, indent=2)
         except OSError as exc:
-            self._set_status(f"Could not save browser state: {exc}")
+            self._set_status(f"Could not save state: {exc}")
+
+    @staticmethod
+    def _setting_raw(raw: dict[str, Any], state_key: str, env_key: str, config_value: Any) -> Any:
+        if env_key in CONFIGURED_KEYS:
+            return config_value
+        return raw.get(state_key, config_value)
+
+    def _setting_str(self, raw: dict[str, Any], state_key: str, env_key: str, config_value: str) -> str:
+        return str(self._setting_raw(raw, state_key, env_key, config_value))
+
+    def _setting_int(self, raw: dict[str, Any], state_key: str, env_key: str, config_value: int) -> int:
+        try:
+            return int(self._setting_raw(raw, state_key, env_key, config_value))
+        except (TypeError, ValueError):
+            return config_value
 
     @staticmethod
     def _as_int(value: Any, default: int) -> int:
@@ -693,12 +1509,19 @@ class BrowserApp:
         except (TypeError, ValueError):
             return default
 
-    @staticmethod
-    def _as_float(value: Any, default: float) -> float:
+    def _setting_float(self, raw: dict[str, Any], state_key: str, env_key: str, config_value: float) -> float:
         try:
-            return float(value)
+            return float(self._setting_raw(raw, state_key, env_key, config_value))
         except (TypeError, ValueError):
-            return default
+            return config_value
+
+    @staticmethod
+    def _normalize_theme(value: str) -> str:
+        return value if value in {"light", "dark"} else "light"
+
+    @staticmethod
+    def _normalize_search_engine(value: str) -> str:
+        return value if value in {"google", "bing"} else "google"
 
 
 def main():

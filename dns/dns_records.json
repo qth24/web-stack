@@ -2,5 +2,10 @@
   "example.local": {"ip": "127.0.0.1", "ttl": 5},
   "web.local": {"ip": "127.0.0.1", "ttl": 5},
   "api.local": {"ip": "127.0.0.1", "ttl": 8},
-  "test.local": {"ip": "192.168.1.5", "ttl": 5}
+  "test.local": {"ip": "192.168.1.5", "ttl": 5},
+  "httpforever.com": {"ip": "146.190.62.39", "ttl": 60},
+  "info.cern.ch": {"ip": "188.184.67.127", "ttl": 60},
+  "example.com": {"ip": "104.20.23.154", "ttl": 60},
+  "example.org": {"ip": "104.20.26.136", "ttl": 60},
+  "httpbin.org": {"ip": "34.234.10.121", "ttl": 60}
 }

@@ -176,7 +176,22 @@ class MiniDNSServer:
         self.max_request_bytes = max(64, int(max_request_bytes))
         self.max_response_bytes = max(128, int(max_response_bytes))
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind((self.host, self.port))
+        try:
+            self.socket.bind((self.host, self.port))
+        except PermissionError as exc:
+            self.socket.close()
+            raise RuntimeError(
+                f"Cannot bind UDP {self.host}:{self.port}: permission denied. "
+                "Use a high local dev port such as 5336, or run with privileges for port 53."
+            ) from exc
+        except OSError as exc:
+            self.socket.close()
+            if exc.errno == 98:
+                raise RuntimeError(
+                    f"Cannot bind UDP {self.host}:{self.port}: address already in use. "
+                    "Stop the other DNS server or choose another DNS_PORT."
+                ) from exc
+            raise
 
     def serve_forever(self) -> None:
         log_event("INFO", f"DNS server listening on {self.host}:{self.port}")
@@ -289,7 +304,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    server = build_server(args)
+    try:
+        server = build_server(args)
+    except RuntimeError as exc:
+        log_event("ERROR", str(exc), "31")
+        raise SystemExit(1) from exc
     server.serve_forever()
 
 

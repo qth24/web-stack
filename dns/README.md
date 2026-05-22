@@ -83,17 +83,19 @@ Edit `dns/.env` to configure the server:
 
 ```env
 DNS_BIND_HOST=0.0.0.0
-DNS_PORT=5200
+DNS_PORT=5336
 DNS_RECORDS_PATH=dns/dns_records.json
 DNS_DEFAULT_TTL=5
 ```
 
 Environment variables override values in `dns/.env`. CLI arguments still work for one-off overrides.
 
+Use `DNS_PORT=5336` for local development without `sudo`. Use `DNS_PORT=53` on a VPS/production DNS server.
+
 Bind to a specific address/port:
 
 ```bash
-python3 dns/dns_server.py --host 0.0.0.0 --port 5200
+python3 dns/dns_server.py --host 0.0.0.0 --port 53
 ```
 
 Use another records file:
@@ -113,8 +115,10 @@ python3 dns/dns_server.py --records /path/to/dns_records.json
 
 ```env
 BROWSER_DNS_HOST=YOUR_VPS_IP
-BROWSER_DNS_PORT=5200
+BROWSER_DNS_PORT=53
 ```
+
+On Linux, binding to UDP port `53` may require elevated permission or a service capability.
 
 ## Stability Notes
 

@@ -21,6 +21,9 @@ class HTTPResponse:
     headers: dict           # {"Content-Type": "text/html", ...}
     body: str               # HTML/text content
     raw: str = field(repr=False)  # Original response (hidden in repr)
+    raw_bytes: bytes = field(default=b"", repr=False)
+    body_bytes: bytes = field(default=b"", repr=False)
+    set_cookie_headers: list[str] = field(default_factory=list)
 
     @property
     def is_ok(self) -> bool:
@@ -49,9 +52,16 @@ class HTTPClient:
     def __init__(self, timeout: float = HTTP_TIMEOUT):
         self.timeout = timeout
 
-    def get(self, ip: str, port: int, path: str, host: str) -> HTTPResponse:
+    def get(
+        self,
+        ip: str,
+        port: int,
+        path: str,
+        host: str,
+        extra_headers: Optional[dict] = None,
+    ) -> HTTPResponse:
         """Sends GET request"""
-        request = self._build_request("GET", path, host)
+        request = self._build_request("GET", path, host, extra_headers=extra_headers)
         return self._send(ip, port, request)
 
     def post(self, ip: str, port: int, path: str, host: str, body: str, content_type: str = "application/x-www-form-urlencoded") -> HTTPResponse:
@@ -115,8 +125,8 @@ class HTTPClient:
                 except socket.timeout:
                     break  # Server silent - assume done
 
-            raw = b"".join(chunks).decode("utf-8", errors="replace")
-            return self._parse_response(raw)
+            raw_bytes = b"".join(chunks)
+            return self._parse_response(raw_bytes)
 
         except ConnectionRefusedError:
             raise HTTPError(f"Could not connect to HTTP server at {ip}:{port}")
@@ -125,7 +135,7 @@ class HTTPClient:
         finally:
             sock.close()
 
-    def _parse_response(self, raw: str) -> HTTPResponse:
+    def _parse_response(self, raw_bytes: bytes) -> HTTPResponse:
         """
         Splits raw HTTP response into status, headers, and body.
         Format:
@@ -134,17 +144,21 @@ class HTTPClient:
           \r\n
           body...
         """
-        if not raw:
+        if not raw_bytes:
             raise HTTPError("Server returned empty response")
 
         # Split headers and body at first blank line
-        if "\r\n\r\n" in raw:
-            header_block, body = raw.split("\r\n\r\n", 1)
-        elif "\n\n" in raw:
-            header_block, body = raw.split("\n\n", 1)
+        if b"\r\n\r\n" in raw_bytes:
+            header_bytes, body_bytes = raw_bytes.split(b"\r\n\r\n", 1)
+        elif b"\n\n" in raw_bytes:
+            header_bytes, body_bytes = raw_bytes.split(b"\n\n", 1)
         else:
+            raw = raw_bytes.decode("utf-8", errors="replace")
             raise HTTPError(f"Invalid HTTP response format:\n{raw[:200]}")
 
+        header_block = header_bytes.decode("iso-8859-1", errors="replace")
+        body = body_bytes.decode("utf-8", errors="replace")
+        raw = raw_bytes.decode("utf-8", errors="replace")
         header_lines = header_block.replace("\r\n", "\n").split("\n")
 
         # Parse status line: "HTTP/1.1 200 OK"
@@ -162,11 +176,19 @@ class HTTPClient:
 
         # Parse headers
         headers = {}
+        set_cookie_headers = []
         for line in header_lines[1:]:
             line = line.strip()
             if ":" in line:
                 key, _, val = line.partition(":")
-                headers[key.strip()] = val.strip()
+                clean_key = key.strip()
+                clean_val = val.strip()
+                if clean_key.lower() == "set-cookie":
+                    set_cookie_headers.append(clean_val)
+                if clean_key in headers:
+                    headers[clean_key] = f"{headers[clean_key]}, {clean_val}"
+                else:
+                    headers[clean_key] = clean_val
 
         return HTTPResponse(
             status_code=status_code,
@@ -174,4 +196,7 @@ class HTTPClient:
             headers=headers,
             body=body,
             raw=raw,
+            raw_bytes=raw_bytes,
+            body_bytes=body_bytes,
+            set_cookie_headers=set_cookie_headers,
         )
