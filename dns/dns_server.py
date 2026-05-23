@@ -16,6 +16,7 @@ try:
         load_records_from_file,
         normalize_domain,
     )
+    from .rate_limiter import RateLimiter
 except ImportError:
     import config
     from dns_cache import DNSCache
@@ -25,6 +26,7 @@ except ImportError:
         load_records_from_file,
         normalize_domain,
     )
+    from rate_limiter import RateLimiter
 
 
 MAX_UDP_REQUEST_BYTES = config.MAX_REQUEST_BYTES
@@ -55,10 +57,12 @@ class DNSRequestHandler:
         cache: DNSCache,
         resolver: StaticResolver,
         max_request_bytes: int = MAX_UDP_REQUEST_BYTES,
+        rate_limiter: Optional[RateLimiter] = None,
     ) -> None:
         self.cache = cache
         self.resolver = resolver
         self.max_request_bytes = max(64, int(max_request_bytes))
+        self.rate_limiter = rate_limiter
 
     def handle_packet(self, payload: bytes, client_addr: Tuple[str, int]) -> Dict[str, Any]:
         if len(payload) > self.max_request_bytes:
@@ -70,6 +74,20 @@ class DNSRequestHandler:
                 "ip": None,
                 "message": message,
             }
+
+        # Rate limit check before parsing (avoids parse cost for limited clients).
+        if self.rate_limiter is not None:
+            client_ip = client_addr[0]
+            if not self.rate_limiter.is_allowed(client_ip):
+                retry_after = self.rate_limiter.get_retry_after(client_ip)
+                log_event("RATE LIMIT", f"{client_ip} exceeded limit", "31")
+                return {
+                    "status": "RATE_LIMITED",
+                    "domain": None,
+                    "ip": None,
+                    "message": "Rate limit exceeded. Try again later.",
+                    "retry_after": retry_after,
+                }
 
         request, error_message = self._parse_request(payload)
         if error_message:
@@ -249,10 +267,16 @@ def build_server(args: argparse.Namespace) -> MiniDNSServer:
         log_event("ERROR", "No valid static records loaded. All lookups will return NXDOMAIN.", "31")
     log_event("INFO", f"Loaded {len(resolver.records)} static DNS records")
 
+    rate_limiter = RateLimiter(
+        max_queries=config.RATE_LIMIT_MAX_QUERIES,
+        window_seconds=config.RATE_LIMIT_WINDOW_SECONDS,
+    )
+
     handler = DNSRequestHandler(
         cache=cache,
         resolver=resolver,
         max_request_bytes=args.max_request_bytes,
+        rate_limiter=rate_limiter,
     )
     return MiniDNSServer(
         host=args.host,

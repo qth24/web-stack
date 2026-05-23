@@ -1,4 +1,5 @@
 {
+  "myweb.local": {"ip": "127.0.0.1", "ttl": 60},
   "example.local": {"ip": "127.0.0.1", "ttl": 5},
   "web.local": {"ip": "127.0.0.1", "ttl": 5},
   "api.local": {"ip": "127.0.0.1", "ttl": 8},

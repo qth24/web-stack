@@ -108,6 +108,7 @@ class NetworkEvent:
     error: str = ""
     request_headers: dict[str, str] = field(default_factory=dict)
     response_headers: dict[str, str] = field(default_factory=dict)
+    cache_state: str = ""
 
 
 @dataclass
@@ -324,9 +325,9 @@ class BrowserApp:
         self.devtools_tabs = QTabWidget()
         devtools_layout.addWidget(self.devtools_tabs)
 
-        self.network_table = QTableWidget(0, 8)
+        self.network_table = QTableWidget(0, 9)
         self.network_table.setHorizontalHeaderLabels(
-            ["URL", "DNS IP", "Cache", "TTL", "Endpoint", "Status", "Time", "Error"]
+            ["URL", "DNS IP", "DNS Cache", "TTL", "Endpoint", "Status", "HTTP Cache", "Time", "Error"]
         )
         self.network_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.devtools_tabs.addTab(self.network_table, "Network")
@@ -658,13 +659,89 @@ class BrowserApp:
     def _render_response(self, tab: BrowserTab, response: HTTPResponse, ip: str, port: int, path: str):
         content_type = response.headers.get("Content-Type", "").lower()
         base_url = QUrl(f"http://{ip}:{port}{path}")
+
+        # Determine HTTP cache state
+        if response.status_code == 304:
+            cache_state = "304"
+        elif response.headers.get("ETag"):
+            cache_state = "hit"
+        else:
+            cache_state = "miss"
+
+        if tab.last_event:
+            tab.last_event.cache_state = cache_state
+
         if response.is_ok and "text/html" in content_type:
-            tab.view.setHtml(response.body, base_url)
+            html_body = self._load_same_origin_assets(response.body, ip, port, tab)
+            tab.view.setHtml(html_body, base_url)
         elif response.is_ok:
             self._render_download_page(tab, response)
         else:
             title = f"{response.status_code} {response.status_text}".strip()
             self._render_error(tab, title or "HTTP Error", response.body[:3000], code=response.status_code)
+
+    def _load_same_origin_assets(self, html_body: str, ip: str, port: int, tab: BrowserTab) -> str:
+        """Inline same-origin CSS as <style> tags and convert same-origin images to data URIs."""
+        host = tab.last_event.host if tab.last_event else ""
+
+        css_link_patterns = [
+            r'<link\s+[^>]*rel=["\']stylesheet["\'][^>]*href=["\']([^"\']+)["\'][^>]*>',
+            r'<link\s+[^>]*href=["\']([^"\']+)["\'][^>]*rel=["\']stylesheet["\'][^>]*>',
+        ]
+        img_pattern = r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>'
+
+        def _is_same_origin(url: str) -> bool:
+            lower = url.lower()
+            if lower.startswith(("http://", "https://")):
+                return False
+            return url.startswith("/") or (
+                not url.startswith("//")
+                and not url.startswith("data:")
+                and not url.startswith("javascript:")
+                and "#" not in url.split("/")[0]
+            )
+
+        def _skip_external(url: str, tag: str) -> str:
+            if tab.last_event:
+                tab.last_event.error += f"; skipped external: {url}" if tab.last_event.error else f"skipped external: {url}"
+            return tag
+
+        for pattern in css_link_patterns:
+            matches = list(re.finditer(pattern, html_body, re.I))
+            for match in reversed(matches):
+                full_tag = match.group(0)
+                href = match.group(1)
+                if not _is_same_origin(href):
+                    html_body = html_body[:match.start()] + _skip_external(href, full_tag) + html_body[match.end():]
+                    continue
+                try:
+                    resp = self.http_client.get(ip=ip, port=port, path=href, host=host)
+                    if resp.is_ok:
+                        replacement = f"<style>{resp.body}</style>"
+                        html_body = html_body[:match.start()] + replacement + html_body[match.end():]
+                except Exception:
+                    pass
+
+        img_matches = list(re.finditer(img_pattern, html_body, re.I))
+        for match in reversed(img_matches):
+            full_tag = match.group(0)
+            src = match.group(1)
+            if src.startswith("data:") or not _is_same_origin(src):
+                if not src.startswith("data:") and _is_same_origin(src) is False:
+                    html_body = html_body[:match.start()] + _skip_external(src, full_tag) + html_body[match.end():]
+                continue
+            try:
+                resp = self.http_client.get(ip=ip, port=port, path=src, host=host)
+                if resp.is_ok:
+                    mime = resp.headers.get("Content-Type", "application/octet-stream")
+                    encoded = base64.b64encode(resp.body_bytes).decode("ascii")
+                    data_uri = f"data:{mime};base64,{encoded}"
+                    new_tag = full_tag.replace(f'src="{src}"', f'src="{data_uri}"', 1).replace(f"src='{src}'", f'src="{data_uri}"', 1)
+                    html_body = html_body[:match.start()] + new_tag + html_body[match.end():]
+            except Exception:
+                pass
+
+        return html_body
 
     def _render_new_tab(self, tab: BrowserTab):
         logo_path = Path(__file__).resolve().parents[3] / "watercat.png"
@@ -1114,6 +1191,7 @@ class BrowserApp:
                 f"{event.dns_ttl_remaining}s" if event.dns_ttl_remaining is not None else "",
                 event.endpoint,
                 event.status,
+                event.cache_state,
                 f"{event.duration_ms}ms" if event.duration_ms else "",
                 event.error,
             ]
