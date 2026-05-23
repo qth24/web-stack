@@ -228,7 +228,7 @@ class BrowserApp:
         self.http_client = HTTPClient()
 
         self.window = QMainWindow()
-        self.window.setWindowTitle("Mini Web Browser")
+        self.window.setWindowTitle("WaterCat Browser")
         self.window.resize(1240, 780)
         self.window.setMinimumSize(980, 620)
 
@@ -316,10 +316,13 @@ class BrowserApp:
         devtools_layout = QVBoxLayout(self.devtools_frame)
         devtools_layout.setContentsMargins(6, 6, 6, 6)
         devtools_header = QHBoxLayout()
-        devtools_header.addWidget(QLabel("DevTools"))
+        dt_label = QLabel("DevTools")
+        dt_label.setStyleSheet("font-weight:600;font-size:13px;letter-spacing:.04em;text-transform:uppercase;")
+        devtools_header.addWidget(dt_label)
         devtools_header.addStretch(1)
-        self.close_devtools_btn = QPushButton("X")
+        self.close_devtools_btn = QPushButton("✕")
         self.close_devtools_btn.setFixedWidth(34)
+        self.close_devtools_btn.setStyleSheet("border-radius:4px;")
         devtools_header.addWidget(self.close_devtools_btn)
         devtools_layout.addLayout(devtools_header)
         self.devtools_tabs = QTabWidget()
@@ -388,113 +391,126 @@ class BrowserApp:
         self.history_list.itemDoubleClicked.connect(self._open_list_item)
         self.bookmark_list.itemDoubleClicked.connect(self._open_list_item)
 
-    def _apply_style(self):
+    def _theme_colors(self) -> dict[str, str]:
         dark = self.settings.theme == "dark"
-        colors = {
-            "window": "#111827" if dark else "#f8fafc",
-            "bar": "#1f2937" if dark else "#e8edf3",
-            "panel": "#0f172a" if dark else "#ffffff",
-            "panel2": "#111827" if dark else "#f9fafb",
-            "text": "#e5e7eb" if dark else "#111827",
-            "muted": "#9ca3af" if dark else "#475569",
-            "border": "#4b5563" if dark else "#94a3b8",
-            "border2": "#374151" if dark else "#cbd5e1",
-            "tab": "#273244" if dark else "#dbe3ee",
-            "tab_selected": "#111827" if dark else "#ffffff",
-            "input": "#0b1220" if dark else "#ffffff",
-            "accent": "#60a5fa" if dark else "#2563eb",
+        if dark:
+            return {
+                "window": "#0f172a", "bar": "#1e293b", "panel": "#1e293b", "panel2": "#334155",
+                "text": "#f1f5f9", "muted": "#94a3b8", "border": "#475569", "border2": "#334155",
+                "tab": "#334155", "tab_selected": "#0f172a", "input": "#0f172a",
+                "accent": "#3b82f6", "accent_hover": "#2563eb",
+                "error": "#ef4444", "warning": "#f59e0b", "success": "#22c55e",
+                "incognito": "#8b5cf6",
+            }
+        return {
+            "window": "#f8fafc", "bar": "#e8edf3", "panel": "#ffffff", "panel2": "#f9fafb",
+            "text": "#0f172a", "muted": "#64748b", "border": "#cbd5e1", "border2": "#e2e8f0",
+            "tab": "#e2e8f0", "tab_selected": "#ffffff", "input": "#ffffff",
+            "accent": "#2563eb", "accent_hover": "#1d4ed8",
+            "error": "#ef4444", "warning": "#f97316", "success": "#22c55e",
+            "incognito": "#8b5cf6",
         }
+
+    def _apply_style(self):
+        c = self._theme_colors()
         self.window.setStyleSheet(
             f"""
-            QMainWindow {{ background: {colors['window']}; color: {colors['text']}; }}
+            QMainWindow {{ background: {c['window']}; color: {c['text']}; }}
             QToolBar {{
-                background: {colors['bar']};
-                border-bottom: 1px solid {colors['border']};
-                spacing: 6px;
-                padding: 6px;
+                background: {c['bar']};
+                border-bottom: 1px solid {c['border']};
+                spacing: 4px;
+                padding: 4px 8px;
             }}
             QToolButton {{
-                color: {colors['text']};
+                color: {c['text']};
                 background: transparent;
                 border: 1px solid transparent;
                 border-radius: 6px;
-                padding: 6px 8px;
+                padding: 5px 7px;
             }}
-            QToolButton:hover {{ border-color: {colors['border']}; background: {colors['panel2']}; }}
+            QToolButton:hover {{ border-color: {c['border']}; background: {c['panel2']}; }}
+            QToolButton:pressed {{ background: {c['tab']}; }}
             QPushButton {{
-                color: {colors['text']};
-                background: {colors['panel2']};
-                border: 1px solid {colors['border']};
+                color: {c['text']};
+                background: {c['panel2']};
+                border: 1px solid {c['border']};
                 border-radius: 6px;
-                padding: 6px 10px;
+                padding: 5px 10px;
             }}
+            QPushButton:hover {{ border-color: {c['accent']}; }}
             QPushButton::menu-indicator {{ image: none; width: 0; }}
             QLineEdit {{
-                color: {colors['text']};
-                background: {colors['input']};
-                border: 1px solid {colors['border']};
+                color: {c['text']};
+                background: {c['input']};
+                border: 1px solid {c['border']};
                 border-radius: 16px;
-                padding: 8px 14px;
-                selection-background-color: {colors['accent']};
+                padding: 7px 14px;
+                font-size: 15px;
+                selection-background-color: {c['accent']};
             }}
-            QLineEdit:focus {{ border: 2px solid {colors['accent']}; padding: 7px 13px; }}
+            QLineEdit:focus {{ border: 2px solid {c['accent']}; padding: 6px 13px; }}
             QTabWidget::pane {{
-                border-top: 1px solid {colors['border']};
-                background: {colors['panel']};
+                border-top: 1px solid {c['border']};
+                background: {c['panel']};
             }}
             QTabBar::tab {{
-                color: {colors['muted']};
-                background: {colors['tab']};
-                border: 1px solid {colors['border']};
+                color: {c['muted']};
+                background: {c['tab']};
+                border: 1px solid {c['border']};
                 border-bottom: 0;
-                padding: 8px 14px;
+                padding: 7px 12px;
                 margin-right: 2px;
-                min-width: 110px;
+                min-width: 80px;
                 border-top-left-radius: 8px;
                 border-top-right-radius: 8px;
             }}
+            QTabBar::tab:hover {{ color: {c['text']}; }}
             QTabBar::tab:selected {{
-                color: {colors['text']};
-                background: {colors['tab_selected']};
-                border-color: {colors['border']};
+                color: {c['text']};
+                background: {c['tab_selected']};
+                border-color: {c['border']};
             }}
             QFrame {{
-                background: {colors['panel']};
-                border: 1px solid {colors['border']};
+                background: {c['panel']};
+                border: 1px solid {c['border']};
             }}
             QTableWidget, QListWidget, QTextEdit {{
-                color: {colors['text']};
-                background: {colors['panel']};
-                border: 1px solid {colors['border']};
-                gridline-color: {colors['border2']};
-                selection-background-color: {colors['accent']};
+                color: {c['text']};
+                background: {c['panel']};
+                border: 1px solid {c['border']};
+                gridline-color: {c['border2']};
+                selection-background-color: {c['accent']};
             }}
             QHeaderView::section {{
-                color: {colors['text']};
-                background: {colors['bar']};
+                color: {c['text']};
+                background: {c['bar']};
                 border: 0;
-                border-right: 1px solid {colors['border']};
-                border-bottom: 1px solid {colors['border']};
+                border-right: 1px solid {c['border']};
+                border-bottom: 1px solid {c['border']};
                 padding: 5px;
             }}
             QComboBox, QSpinBox {{
-                color: {colors['text']};
-                background: {colors['input']};
-                border: 1px solid {colors['border']};
+                color: {c['text']};
+                background: {c['input']};
+                border: 1px solid {c['border']};
                 border-radius: 6px;
                 padding: 5px 8px;
             }}
             QMenu {{
-                color: {colors['text']};
-                background: {colors['panel']};
-                border: 1px solid {colors['border']};
+                color: {c['text']};
+                background: {c['panel']};
+                border: 1px solid {c['border']};
+                border-radius: 8px;
+                padding: 4px 0;
             }}
-            QMenu::item {{ padding: 7px 22px; }}
-            QMenu::item:selected {{ background: {colors['accent']}; color: white; }}
+            QMenu::item {{ padding: 7px 22px; border-radius: 4px; margin: 2px 4px; }}
+            QMenu::item:selected {{ background: {c['accent']}; color: white; }}
+            QMenu::separator {{ height: 1px; background: {c['border']}; margin: 4px 0; }}
             QStatusBar {{
-                color: {colors['muted']};
-                background: {colors['bar']};
-                border-top: 1px solid {colors['border']};
+                color: {c['muted']};
+                background: {c['bar']};
+                border-top: 1px solid {c['border']};
             }}
             """
         )
@@ -507,7 +523,7 @@ class BrowserApp:
         if QWebEnginePage:
             tab.page = BrowserPage(self, tab)
             view.setPage(tab.page)
-        index = self.tabs.addTab(view, "Incognito" if incognito else "New Tab")
+        index = self.tabs.addTab(view, "\U0001F576 Incognito" if incognito else "New Tab")
         self.tabs.setCurrentIndex(index)
         view.setProperty("browser_tab", tab)
         if url:
@@ -562,7 +578,7 @@ class BrowserApp:
 
         start = time.time()
         event = NetworkEvent(url=url, dns_server=f"{self.settings.dns_host}:{self.settings.dns_port}")
-        self._set_status("Loading...")
+        self._set_status("Resolving DNS...")
 
         try:
             if url.startswith("internal:home"):
@@ -614,10 +630,12 @@ class BrowserApp:
             event.dns_ttl_remaining = dns_ttl_remaining
             http_port = parsed.port if parsed.port not in (80, 443) else self.settings.http_default_port
             event.endpoint = f"{dns_ip}:{http_port}"
+            self._set_status("Connecting...")
 
             request_headers = self._request_headers(parsed.host, tab)
             event.request_headers = dict(request_headers)
             request_path = self._request_path(parsed.raw, parsed.path)
+            self._set_status("Loading...")
             try:
                 response = self.http_client.get(
                     ip=dns_ip,
@@ -744,7 +762,7 @@ class BrowserApp:
         return html_body
 
     def _render_new_tab(self, tab: BrowserTab):
-        logo_path = Path(__file__).resolve().parents[3] / "watercat.png"
+        logo_path = Path(__file__).resolve().parents[1] / "assets" / "watercat.png"
         logo_src = self._image_data_uri(logo_path)
         shortcuts = "".join(
             "<div class='shortcut-wrap'><a class='shortcut' href='{url}'><span>{letter}</span><b>{label}</b></a>"
@@ -756,10 +774,15 @@ class BrowserApp:
             )
             for item in self.shortcuts[:10]
         )
+        brand_inner = (
+            f"<img src='{html.escape(logo_src)}'>" if logo_src
+            else "<h1 style='color:var(--accent,#2563eb)'>WaterCat</h1>"
+        )
         body = f"""
         <main class="home">
           <div class="brand">
-            {"<img src='" + html.escape(logo_src) + "'>" if logo_src else "<h1>WaterCat</h1>"}
+            {brand_inner}
+            <span class="brand-tagline">Browse the web, your way.</span>
           </div>
           <form class="home-search" action="internal:go" method="get">
             <input name="q" autofocus placeholder="Search with {html.escape(self.settings.search_engine.title())} or enter address">
@@ -767,16 +790,16 @@ class BrowserApp:
           <section class="shortcuts">
             {shortcuts}
             <form class="shortcut-add" action="internal:add-shortcut" method="get">
-              <input name="name" placeholder="Shortcut name">
-              <input name="url" placeholder="Add shortcut URL">
-              <button type="submit">Add Shortcut</button>
+              <input name="name" placeholder="Name">
+              <input name="url" placeholder="URL">
+              <button type="submit">Add</button>
             </form>
           </section>
         </main>
         """
         tab.view.setHtml(
             self._page_html(
-                "New Tab",
+                "WaterCat Browser",
                 body,
             )
         )
@@ -790,41 +813,62 @@ class BrowserApp:
             for item in self.bookmarks + [entry["url"] for entry in self.history]
             if query.lower() in item.lower()
         ][:12]
-        links = "".join(
-            f"<li><a href='{html.escape(item)}'>{html.escape(item)}</a></li>"
+        local_links = "".join(
+            f"<div class='card'><h3><a href='{html.escape(item)}'>{html.escape(item)}</a></h3></div>"
             for item in matches
         )
-        if not links:
-            links = "<li>No local bookmark/history matches.</li>"
+        if not local_links:
+            local_links = "<p class='muted' style='margin:16px 48px'>No local bookmark/history matches.</p>"
         engine_url = self._engine_search_url(query)
         engine_results = "".join(
             f"<div class='result'><b>{html.escape(title)}</b><p>{html.escape(url)}</p></div>"
             for title, url in self._external_search_results(query)
         )
+        engine_name = html.escape(self.settings.search_engine.title())
         body = (
-            f"<h1>Search</h1><p><b>{html.escape(query)}</b></p>"
-            f"<p>Search engine: <b>{html.escape(self.settings.search_engine.title())}</b></p>"
-            f"<div class='result'><b>{html.escape(self.settings.search_engine.title())} results page</b>"
+            f"<div class='search-header'>"
+            f"<h1>Search results for &ldquo;{html.escape(query)}&rdquo;</h1>"
+            f"<span class='search-engine'>{engine_name}</span>"
+            f"</div>"
+            f"<div class='result'><b>{engine_name} results page</b>"
             f"<p>{html.escape(engine_url)}</p></div>"
             f"{engine_results}"
-            "<p>This browser shows third-party search result links without resolving/opening them through custom DNS.</p>"
-            f"<h2>Local matches</h2><ul>{links}</ul>"
+            f"<h2 style='margin:24px 48px 12px'>Local matches</h2>"
+            f"{local_links}"
         )
         tab.view.setHtml(self._page_html("Search", body))
 
     def _render_error(self, tab: BrowserTab, title: str, message: str, code: int = 500):
-        tab.view.setHtml(
-            self._page_html(
-                title,
-                "<section class='error-page'>"
-                f"<div class='error-code'>{code}</div>"
-                f"<h1>{html.escape(title)}</h1>"
-                f"<pre>{html.escape(message)}</pre>"
-                "<p class='hint'>Check the DNS record, server IP, port, or whether the HTTP server is running.</p>"
-                "</section>",
-                error=True,
-            )
+        c = self._theme_colors()
+        if code == 404 or "not found" in title.lower():
+            icon = "&#128269;"
+            hint = "The page you're looking for doesn't exist. Check the URL or try navigating from the home page."
+        elif "timeout" in title.lower() or code == 504:
+            icon = "&#9203;"
+            hint = "The server took too long to respond. Check your network connection and try again."
+        elif "rate" in title.lower() or code == 429:
+            icon = "&#9888;&#65039;"
+            hint = "Too many requests. Wait a moment before trying again."
+        elif "invalid" in title.lower() or "url" in title.lower():
+            icon = "&#9888;&#65039;"
+            hint = "The URL format is invalid. Make sure it starts with http:// and includes a valid host."
+        elif "bad gateway" in title.lower() or code == 502:
+            icon = "&#128268;"
+            hint = "The server returned an invalid response. The upstream service may be down."
+        else:
+            icon = "&#128683;"
+            hint = "Check the DNS record, server IP, port, or whether the HTTP server is running."
+
+        body = (
+            "<section class='error-page'>"
+            f"<div class='error-icon'>{icon}</div>"
+            f"<div class='error-code'>{code}</div>"
+            f"<h1>{html.escape(title)}</h1>"
+            f"<pre>{html.escape(message)}</pre>"
+            f"<p class='error-hint'>{hint}</p>"
+            "</section>"
         )
+        tab.view.setHtml(self._page_html(title, body, error=True))
         tab.title = title
         self._update_tab_label(tab)
         self._set_status(title)
@@ -832,13 +876,17 @@ class BrowserApp:
     def _render_download_page(self, tab: BrowserTab, response: HTTPResponse):
         size = len(response.body_bytes)
         content_type = html.escape(response.headers.get("Content-Type", "application/octet-stream"))
-        tab.view.setHtml(
-            self._page_html(
-                "Download ready",
-                f"<h1>Download ready</h1><p>{size} bytes</p><p>{content_type}</p>"
-                "<p>Use Menu > Download to save this response.</p>",
-            )
+        size_str = f"{size:,}" if size >= 1000 else str(size)
+        body = (
+            "<div class='download-page'>"
+            "<div class='download-card'>"
+            "<div class='download-icon'>&#128229;</div>"
+            "<h1>Download ready</h1>"
+            f"<p class='download-meta'>{size_str} bytes &middot; {content_type}</p>"
+            "<p class='muted'>Use Menu &gt; Download to save this response.</p>"
+            "</div></div>"
         )
+        tab.view.setHtml(self._page_html("Download ready", body))
 
     def _open_settings_page(self):
         self._show_settings_tab()
@@ -850,63 +898,75 @@ class BrowserApp:
             return
         body = f"""
         <h1>Settings</h1>
-        <form class="settings-form" action="internal:save-settings" method="get">
-          <label>Theme
-            <select name="theme">
-              <option value="light" {'selected' if self.settings.theme == 'light' else ''}>Light</option>
-              <option value="dark" {'selected' if self.settings.theme == 'dark' else ''}>Dark</option>
-            </select>
-          </label>
-          <label>Font size <input type="number" min="12" max="24" name="font_size" value="{self.settings.font_size}"></label>
-          <label>Search engine
-            <select name="search_engine">
-              <option value="google" {'selected' if self.settings.search_engine == 'google' else ''}>Google</option>
-              <option value="bing" {'selected' if self.settings.search_engine == 'bing' else ''}>Bing</option>
-            </select>
-          </label>
-          <button type="submit">Save Settings</button>
-        </form>
-        <section class="settings-readonly">
+        <div class="settings-section">
+          <h2>Appearance</h2>
+          <div class="settings-card">
+            <form class="settings-form" action="internal:save-settings" method="get" style="margin:0;border:0;padding:0">
+              <label>Theme
+                <select name="theme">
+                  <option value="light" {'selected' if self.settings.theme == 'light' else ''}>Light</option>
+                  <option value="dark" {'selected' if self.settings.theme == 'dark' else ''}>Dark</option>
+                </select>
+              </label>
+              <label>Font size <input type="number" min="12" max="24" name="font_size" value="{self.settings.font_size}"></label>
+              <label>Search engine
+                <select name="search_engine">
+                  <option value="google" {'selected' if self.settings.search_engine == 'google' else ''}>Google</option>
+                  <option value="bing" {'selected' if self.settings.search_engine == 'bing' else ''}>Bing</option>
+                </select>
+              </label>
+              <button type="submit">Save Settings</button>
+            </form>
+          </div>
+        </div>
+        <div class="settings-section">
           <h2>Connection</h2>
-          <p><b>DNS:</b> {html.escape(self.settings.dns_host)}:{self.settings.dns_port}</p>
-          <p><b>HTTP default port:</b> {self.settings.http_default_port}</p>
-          <p><b>Home:</b> {html.escape(self.settings.home_url)}</p>
-          <p><b>Search URL:</b> {html.escape(self.settings.search_url)}</p>
-          <p><b>DNS cache:</b> {'enabled' if self.settings.enable_dns_cache else 'disabled'}</p>
-        </section>
+          <div class="settings-readonly">
+            <p><b>DNS:</b> {html.escape(self.settings.dns_host)}:{self.settings.dns_port}</p>
+            <p><b>HTTP default port:</b> {self.settings.http_default_port}</p>
+            <p><b>Home:</b> {html.escape(self.settings.home_url)}</p>
+            <p><b>Search URL:</b> {html.escape(self.settings.search_url)}</p>
+            <p><b>DNS cache:</b> {'enabled' if self.settings.enable_dns_cache else 'disabled'}</p>
+          </div>
+        </div>
         """
         tab.view.setHtml(self._page_html("Settings", body))
         tab.title = "Settings"
         self._update_tab_label(tab)
 
     def _page_html(self, title: str, body: str, error: bool = False) -> str:
-        dark = self.settings.theme == "dark"
-        text = "#e5e7eb" if dark else "#0f172a"
-        background = "#111827" if dark else "#ffffff"
-        panel = "#0b1220" if dark else "#f8fafc"
-        border = "#374151" if dark else "#cbd5e1"
-        muted = "#9ca3af" if dark else "#64748b"
-        shortcut = "#1f2937" if dark else "#f1f5f9"
-        color = "#f87171" if error and dark else ("#b91c1c" if error else text)
+        c = self._theme_colors()
+        error_color = c["error"] if error else c["text"]
         return (
             "<!doctype html><html><head><meta charset='utf-8'>"
             f"<title>{html.escape(title)}</title>"
-            f"<style>body{{font-family:system-ui,Segoe UI,sans-serif;margin:0;color:{text};background:{background};font-size:{self.settings.font_size}px}}"
+            f"<style>body{{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;color:{c['text']};background:{c['window']};font-size:{self.settings.font_size}px}}"
             "body>h1,body>p,body>h2,body>ul,body>pre,body>.result{margin-left:48px;margin-right:48px}"
             "body>h1{margin-top:48px}"
-            f"h1{{color:{color}}}pre{{white-space:pre-wrap;background:{panel};border:1px solid {border};padding:16px;border-radius:8px}}"
-            f"a{{color:#2563eb}}.home{{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:34px;padding-bottom:80px}}"
-            ".brand{display:flex;align-items:center;justify-content:center}.brand img{width:min(520px,70vw);height:auto;object-fit:contain}.brand h1{font-size:44px;margin:0}"
-            f".home-search{{width:min(760px,70vw);background:{panel};border:1px solid {border};box-shadow:0 12px 34px rgba(15,23,42,.16);border-radius:14px;padding:10px 14px;color:{muted}}}"
-            f".home-search input{{width:100%;box-sizing:border-box;border:0;outline:0;background:transparent;color:{text};font-size:18px;padding:10px}}"
-            ".shortcuts{display:flex;gap:28px;flex-wrap:wrap;justify-content:center;max-width:900px}"
-            f".shortcut-wrap{{width:106px;text-align:center}}.shortcut{{display:block;text-decoration:none;color:{text}}}.shortcut span{{display:grid;place-items:center;width:72px;height:72px;margin:0 auto 10px;background:{shortcut};border:1px solid {border};border-radius:18px;font-size:30px}}"
-            f".shortcut b{{font-size:14px;font-weight:600}}.shortcut-delete{{display:block;margin-top:6px;font-size:12px;color:{muted};text-decoration:none}}"
-            f".shortcut-add{{width:190px;background:{panel};border:1px solid {border};border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px}}.shortcut-add input,.settings-form input,.settings-form select{{background:{background};color:{text};border:1px solid {border};border-radius:8px;padding:8px}}.shortcut-add button,.settings-form button{{background:#2563eb;color:white;border:0;border-radius:8px;padding:9px}}"
-            f".settings-form,.settings-readonly{{margin:24px 48px;background:{panel};border:1px solid {border};border-radius:12px;padding:18px;max-width:760px;display:flex;flex-direction:column;gap:14px}}.settings-form label{{display:flex;justify-content:space-between;gap:18px;align-items:center}}"
-            f".data-table{{margin:24px 48px;border-collapse:collapse;width:calc(100% - 96px);background:{panel};border:1px solid {border};border-radius:12px;overflow:hidden}}.data-table th,.data-table td{{border-bottom:1px solid {border};padding:12px;text-align:left}}.data-table th{{color:{muted};font-size:13px;text-transform:uppercase;letter-spacing:.04em}}"
-            f".muted{{color:{muted}}}.result{{background:{panel};border:1px solid {border};border-radius:10px;padding:16px;margin-top:16px}}"
-            f".error-page{{margin:64px 48px;max-width:900px}}.error-code{{font-size:72px;font-weight:800;color:{color};line-height:1}}.hint{{color:{muted}}}</style>"
+            f"h1{{color:{error_color}}}pre{{white-space:pre-wrap;background:{c['panel2']};border:1px solid {c['border']};padding:16px;border-radius:8px}}"
+            f"a{{color:{c['accent']};text-decoration:none}}a:hover{{color:{c['accent_hover']};text-decoration:underline}}"
+            f".home{{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;padding-bottom:80px;background:linear-gradient(180deg,{c['window']} 0%,{c['panel2']} 100%)}}"
+            ".brand{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}.brand img{width:min(420px,60vw);height:auto;object-fit:contain}.brand h1{font-size:44px;margin:0}"
+            f".brand-tagline{{color:{c['muted']};font-size:15px;margin-top:2px;letter-spacing:.02em}}"
+            f".home-search{{width:min(680px,65vw);background:{c['panel']};border:2px solid {c['border']};box-shadow:0 8px 28px rgba(15,23,42,.12);border-radius:16px;padding:6px 8px;transition:border-color .15s,box-shadow .15s}}"
+            f".home-search:focus-within{{border-color:{c['accent']};box-shadow:0 8px 28px rgba(37,99,235,.18)}}"
+            f".home-search input{{width:100%;box-sizing:border-box;border:0;outline:0;background:transparent;color:{c['text']};font-size:17px;padding:12px 10px}}"
+            ".shortcuts{display:flex;gap:20px;flex-wrap:wrap;justify-content:center;max-width:860px}"
+            f".shortcut-wrap{{width:96px;text-align:center}}.shortcut{{display:block;text-decoration:none;color:{c['text']}}}.shortcut span{{display:grid;place-items:center;width:64px;height:64px;margin:0 auto 8px;background:{c['panel2']};border:1px solid {c['border']};border-radius:16px;font-size:26px;transition:transform .12s,border-color .12s}}.shortcut:hover span{{transform:translateY(-2px);border-color:{c['accent']}}}"
+            f".shortcut b{{font-size:13px;font-weight:600}}.shortcut-delete{{display:block;margin-top:4px;font-size:11px;color:{c['muted']};text-decoration:none}}.shortcut-delete:hover{{color:{c['error']}}}"
+            f".shortcut-add{{width:170px;background:{c['panel']};border:1px solid {c['border']};border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:6px}}.shortcut-add input,.settings-form input,.settings-form select{{background:{c['input']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:8px;font-size:14px}}.shortcut-add input:focus,.settings-form input:focus,.settings-form select:focus{{border-color:{c['accent']};outline:none}}.shortcut-add button,.settings-form button{{background:{c['accent']};color:white;border:0;border-radius:8px;padding:9px;font-size:14px;cursor:pointer;transition:background .12s}}.shortcut-add button:hover,.settings-form button:hover{{background:{c['accent_hover']}}}"
+            f".settings-section{{margin:24px 48px;max-width:760px}}.settings-section h2{{color:{c['muted']};font-size:13px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px}}"
+            f".settings-card{{background:{c['panel']};border:1px solid {c['border']};border-radius:12px;padding:18px;margin-bottom:16px}}"
+            f".settings-form{{margin:24px 48px;background:{c['panel']};border:1px solid {c['border']};border-radius:12px;padding:18px;max-width:760px;display:flex;flex-direction:column;gap:14px}}.settings-form label{{display:flex;justify-content:space-between;gap:18px;align-items:center}}"
+            f".settings-readonly{{margin:24px 48px;background:{c['panel2']};border:1px solid {c['border']};border-radius:12px;padding:18px;max-width:760px;display:flex;flex-direction:column;gap:10px}}"
+            f".data-table{{margin:24px 48px;border-collapse:collapse;width:calc(100% - 96px);background:{c['panel']};border:1px solid {c['border']};border-radius:12px;overflow:hidden}}.data-table th,.data-table td{{border-bottom:1px solid {c['border2']};padding:12px;text-align:left}}.data-table th{{color:{c['muted']};font-size:13px;text-transform:uppercase;letter-spacing:.04em;background:{c['panel2']}}}.data-table tbody tr:nth-child(even){{background:{c['panel2']}}}.data-table tbody tr:hover{{background:{c['border2']}}}"
+            f".muted{{color:{c['muted']}}}.result{{background:{c['panel']};border:1px solid {c['border']};border-radius:10px;padding:16px;margin:16px 48px}}"
+            f".error-page{{margin:64px 48px;max-width:700px;text-align:center}}.error-icon{{font-size:64px;margin-bottom:16px}}.error-code{{font-size:72px;font-weight:800;color:{error_color};line-height:1}}.error-hint{{color:{c['muted']};margin-top:16px;font-size:15px}}"
+            f".card{{background:{c['panel']};border:1px solid {c['border']};border-radius:12px;padding:16px;margin:12px 48px;transition:border-color .12s}}.card:hover{{border-color:{c['accent']}}}"
+            f".card h3{{margin:0 0 6px;font-size:15px}}.card p{{margin:0;color:{c['muted']};font-size:13px}}"
+            f".download-page{{margin:48px;max-width:600px}}.download-card{{background:{c['panel']};border:1px solid {c['border']};border-radius:12px;padding:24px;text-align:center}}.download-icon{{font-size:48px;margin-bottom:12px}}.download-meta{{color:{c['muted']};font-size:14px;margin:8px 0}}"
+            f".search-header{{margin:32px 48px 16px}}.search-header h1{{margin:0}}.search-engine{{display:inline-block;background:{c['panel2']};border:1px solid {c['border']};border-radius:20px;padding:4px 14px;font-size:13px;color:{c['muted']};margin-top:8px}}"
+            "</style>"
             "<script>"
             "document.addEventListener('submit',function(e){"
             "var f=e.target;if(!f.action||!f.action.startsWith('internal:'))return;"
@@ -1016,11 +1076,11 @@ class BrowserApp:
         tab = self._current_tab()
         if not tab:
             return
-        links = "".join(
-            f"<li><a href='{html.escape(url)}'>{html.escape(url)}</a></li>"
+        cards = "".join(
+            f"<div class='card'><h3><a href='{html.escape(url)}'>{html.escape(url)}</a></h3></div>"
             for url in self.bookmarks
-        ) or "<li>No bookmarks yet.</li>"
-        tab.view.setHtml(self._page_html("Bookmarks", f"<h1>Bookmarks</h1><ul>{links}</ul>"))
+        ) or "<p class='muted' style='margin:24px 48px'>No bookmarks yet.</p>"
+        tab.view.setHtml(self._page_html("Bookmarks", f"<h1>Bookmarks</h1>{cards}"))
         tab.current_url = "internal:bookmarks"
         tab.title = "Bookmarks"
         self._update_tab_label(tab)
@@ -1182,6 +1242,7 @@ class BrowserApp:
 
     def _refresh_network_table(self):
         self.network_table.setRowCount(0)
+        c = self._theme_colors()
         for row, event in enumerate(self.network_events):
             self.network_table.insertRow(row)
             values = [
@@ -1196,7 +1257,21 @@ class BrowserApp:
                 event.error,
             ]
             for col, value in enumerate(values):
-                self.network_table.setItem(row, col, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if col == 5 and event.status:
+                    try:
+                        code = int(event.status.split(" ", 1)[0])
+                        if 200 <= code < 300:
+                            item.setForeground(Qt.GlobalColor.darkGreen)
+                        elif 300 <= code < 400:
+                            item.setForeground(Qt.GlobalColor.darkYellow)
+                        elif code >= 400:
+                            item.setForeground(Qt.GlobalColor.darkRed)
+                    except (ValueError, IndexError):
+                        pass
+                if col == 8 and event.error:
+                    item.setForeground(Qt.GlobalColor.darkRed)
+                self.network_table.setItem(row, col, item)
 
     def _refresh_cookies_table(self):
         self.cookies_table.setRowCount(0)
@@ -1241,9 +1316,10 @@ class BrowserApp:
         )
 
     def _refresh_console(self):
+        c = self._theme_colors()
         lines = []
         for event in self.network_events[:80]:
-            level = "ERROR" if event.error else "INFO"
+            level = "ERR" if event.error else "LOG"
             status = event.status or "-"
             klass = "err" if event.error else "info"
             lines.append(
@@ -1251,7 +1327,12 @@ class BrowserApp:
                 f"<span>{html.escape(event.url)}</span> {html.escape(event.error)}</div>"
             )
         self.console_text.setHtml(
-            "<style>body{font-family:monospace}.err{color:#ef4444}.info{color:#22c55e}span{color:#60a5fa}</style>"
+            f"<style>body{{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:12px;line-height:1.5;"
+            f"background:{c['panel2']};color:{c['text']};padding:8px}}"
+            f".err{{color:{c['error']};border-left:3px solid {c['error']};padding-left:8px;margin:4px 0}}"
+            f".info{{color:{c['success']};border-left:3px solid {c['success']};padding-left:8px;margin:4px 0}}"
+            f"span{{color:{c['accent']};font-size:11px}}"
+            f"b{{font-weight:600;min-width:36px;display:inline-block}}</style>"
             + "\n".join(lines)
         )
 
@@ -1278,13 +1359,16 @@ class BrowserApp:
         label = tab.title or "New Tab"
         if tab.incognito:
             label = f"Incognito - {label}"
-        self.window.setWindowTitle(f"{label} - Mini Web Browser")
+        self.window.setWindowTitle(f"{label} - WaterCat Browser")
 
     def _update_tab_label(self, tab: BrowserTab):
         for index in range(self.tabs.count()):
             widget = self.tabs.widget(index)
             if widget and widget.property("browser_tab") is tab:
-                self.tabs.setTabText(index, tab.title[:24])
+                label = tab.title[:24]
+                if tab.incognito:
+                    label = f"\U0001F576 {label}"
+                self.tabs.setTabText(index, label)
                 return
 
     def _make_dns_client(self) -> DNSClient:
@@ -1386,40 +1470,47 @@ class BrowserApp:
         return results or self._synthetic_search_results(query)
 
     def _highlight_html(self, source: str) -> str:
+        c = self._theme_colors()
+        tag_color = c["accent"]
+        attr_color = "#c084fc"
+        val_color = c["warning"]
+        comment_color = c["success"]
+        bracket_color = c["muted"]
         escaped = html.escape(source)
         escaped = re.sub(
             r"(&lt;/?)([a-zA-Z0-9:-]+)",
-            r"<span style='color:#64748b'>\1</span><span style='color:#60a5fa'>\2</span>",
+            rf"<span style='color:{bracket_color}'>\1</span><span style='color:{tag_color}'>\2</span>",
             escaped,
         )
         escaped = re.sub(
             r"([a-zA-Z_:][-a-zA-Z0-9_:.]*)(=)&quot;([^&]*)&quot;",
-            r"<span style='color:#c084fc'>\1</span><span style='color:#94a3b8'>\2</span><span style='color:#f59e0b'>&quot;\3&quot;</span>",
+            rf"<span style='color:{attr_color}'>\1</span><span style='color:{bracket_color}'>\2</span><span style='color:{val_color}'>&quot;\3&quot;</span>",
             escaped,
         )
-        escaped = escaped.replace("&lt;!--", "<span style='color:#22c55e'>&lt;!--")
+        escaped = escaped.replace("&lt;!--", f"<span style='color:{comment_color}'>&lt;!--")
         escaped = escaped.replace("--&gt;", "--&gt;</span>")
         return (
-            "<pre style='font-family:monospace;font-size:13px;line-height:1.45;"
-            "background:#1f2937;color:#d1d5db;padding:12px;margin:0;white-space:pre-wrap'>"
+            f"<pre style='font-family:monospace;font-size:13px;line-height:1.45;"
+            f"background:{c['panel2']};color:{c['text']};padding:12px;margin:0;white-space:pre-wrap'>"
             f"{escaped}</pre>"
         )
 
     def _highlight_json(self, value: Any) -> str:
+        c = self._theme_colors()
         text = html.escape(json.dumps(value, indent=2))
         text = re.sub(
             r'(&quot;[^&]+&quot;)(:)',
-            r"<span style='color:#60a5fa'>\1</span><span style='color:#94a3b8'>\2</span>",
+            rf"<span style='color:{c['accent']}'>\1</span><span style='color:{c['muted']}'>\2</span>",
             text,
         )
         text = re.sub(
             r": (&quot;.*?&quot;)",
-            r": <span style='color:#f59e0b'>\1</span>",
+            rf": <span style='color:{c['warning']}'>\1</span>",
             text,
         )
         return (
-            "<pre style='font-family:monospace;font-size:13px;line-height:1.45;"
-            "background:#1f2937;color:#d1d5db;padding:12px;margin:0;white-space:pre-wrap'>"
+            f"<pre style='font-family:monospace;font-size:13px;line-height:1.45;"
+            f"background:{c['panel2']};color:{c['text']};padding:12px;margin:0;white-space:pre-wrap'>"
             f"{text}</pre>"
         )
 
