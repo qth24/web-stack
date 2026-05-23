@@ -762,7 +762,7 @@ class BrowserApp:
         return html_body
 
     def _render_new_tab(self, tab: BrowserTab):
-        logo_path = Path(__file__).resolve().parents[1] / "assets" / "watercat.png"
+        logo_path = Path(__file__).resolve().parents[2] / "logo.png"
         logo_src = self._image_data_uri(logo_path)
         shortcuts = "".join(
             "<div class='shortcut-wrap'><a class='shortcut' href='{url}'><span>{letter}</span><b>{label}</b></a>"
@@ -774,15 +774,13 @@ class BrowserApp:
             )
             for item in self.shortcuts[:10]
         )
-        brand_inner = (
-            f"<img src='{html.escape(logo_src)}'>" if logo_src
-            else "<h1 style='color:var(--accent,#2563eb)'>WaterCat</h1>"
-        )
+        logo_img = f"<img src='{html.escape(logo_src)}'>" if logo_src else ""
+        brand_inner = f"{logo_img}<h1>WaterCat</h1>"
+        
         body = f"""
         <main class="home">
           <div class="brand">
             {brand_inner}
-            <span class="brand-tagline">Browse the web, your way.</span>
           </div>
           <form class="home-search" action="internal:go" method="get">
             <input name="q" autofocus placeholder="Search with {html.escape(self.settings.search_engine.title())} or enter address">
@@ -937,6 +935,19 @@ class BrowserApp:
     def _page_html(self, title: str, body: str, error: bool = False) -> str:
         c = self._theme_colors()
         error_color = c["error"] if error else c["text"]
+        
+        # Determine background gradient based on theme
+        if self.settings.theme == "dark":
+            gradient = "linear-gradient(135deg, #1e1b4b 0%, #1e293b 50%, #0f172a 100%)"
+            card_bg = "rgba(51, 65, 85, 0.6)"
+            card_hover = "rgba(71, 85, 105, 0.8)"
+            shortcut_inner_bg = "rgba(30, 41, 59, 0.8)"
+        else:
+            gradient = "linear-gradient(135deg, #eef2ff 0%, #f1f5f9 50%, #f8fafc 100%)"
+            card_bg = "rgba(226, 232, 240, 0.6)"
+            card_hover = "rgba(203, 213, 225, 0.8)"
+            shortcut_inner_bg = "rgba(255, 255, 255, 0.8)"
+
         return (
             "<!doctype html><html><head><meta charset='utf-8'>"
             f"<title>{html.escape(title)}</title>"
@@ -945,16 +956,22 @@ class BrowserApp:
             "body>h1{margin-top:48px}"
             f"h1{{color:{error_color}}}pre{{white-space:pre-wrap;background:{c['panel2']};border:1px solid {c['border']};padding:16px;border-radius:8px}}"
             f"a{{color:{c['accent']};text-decoration:none}}a:hover{{color:{c['accent_hover']};text-decoration:underline}}"
-            f".home{{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;padding-bottom:80px;background:linear-gradient(180deg,{c['window']} 0%,{c['panel2']} 100%)}}"
-            ".brand{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}.brand img{width:min(420px,60vw);height:auto;object-fit:contain}.brand h1{font-size:44px;margin:0}"
-            f".brand-tagline{{color:{c['muted']};font-size:15px;margin-top:2px;letter-spacing:.02em}}"
-            f".home-search{{width:min(680px,65vw);background:{c['panel']};border:2px solid {c['border']};box-shadow:0 8px 28px rgba(15,23,42,.12);border-radius:16px;padding:6px 8px;transition:border-color .15s,box-shadow .15s}}"
-            f".home-search:focus-within{{border-color:{c['accent']};box-shadow:0 8px 28px rgba(37,99,235,.18)}}"
-            f".home-search input{{width:100%;box-sizing:border-box;border:0;outline:0;background:transparent;color:{c['text']};font-size:17px;padding:12px 10px}}"
-            ".shortcuts{display:flex;gap:20px;flex-wrap:wrap;justify-content:center;max-width:860px}"
-            f".shortcut-wrap{{width:96px;text-align:center}}.shortcut{{display:block;text-decoration:none;color:{c['text']}}}.shortcut span{{display:grid;place-items:center;width:64px;height:64px;margin:0 auto 8px;background:{c['panel2']};border:1px solid {c['border']};border-radius:16px;font-size:26px;transition:transform .12s,border-color .12s}}.shortcut:hover span{{transform:translateY(-2px);border-color:{c['accent']}}}"
-            f".shortcut b{{font-size:13px;font-weight:600}}.shortcut-delete{{display:block;margin-top:4px;font-size:11px;color:{c['muted']};text-decoration:none}}.shortcut-delete:hover{{color:{c['error']}}}"
-            f".shortcut-add{{width:170px;background:{c['panel']};border:1px solid {c['border']};border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:6px}}.shortcut-add input,.settings-form input,.settings-form select{{background:{c['input']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:8px;font-size:14px}}.shortcut-add input:focus,.settings-form input:focus,.settings-form select:focus{{border-color:{c['accent']};outline:none}}.shortcut-add button,.settings-form button{{background:{c['accent']};color:white;border:0;border-radius:8px;padding:9px;font-size:14px;cursor:pointer;transition:background .12s}}.shortcut-add button:hover,.settings-form button:hover{{background:{c['accent_hover']}}}"
+            f".home{{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:36px;padding-bottom:80px;background:{gradient};}}"
+            ".brand{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:16px}.brand img{height:64px;width:auto;object-fit:contain}.brand h1{font-size:48px;margin:0;font-weight:700;letter-spacing:-0.02em}"
+            f".home-search{{width:min(720px,75vw);background:{c['panel']};border:1px solid {c['border']};box-shadow:0 10px 30px rgba(0,0,0,0.1);border-radius:12px;padding:4px;transition:box-shadow .2s, border-color .2s}}"
+            f".home-search:focus-within{{border-color:{c['accent']};box-shadow:0 10px 40px rgba(0,0,0,0.15)}}"
+            f".home-search input{{width:100%;box-sizing:border-box;border:0;outline:0;background:transparent;color:{c['text']};font-size:18px;padding:14px 16px}}"
+            ".shortcuts{display:flex;gap:20px;flex-wrap:wrap;justify-content:center;max-width:960px;margin-top:12px}"
+            ".shortcut-wrap{position:relative;width:112px;text-align:center}"
+            f".shortcut{{display:flex;flex-direction:column;align-items:center;gap:12px;text-decoration:none;color:{c['text']};padding:12px;border-radius:12px;background:{card_bg};transition:background .15s, transform .15s}}"
+            f".shortcut:hover{{background:{card_hover};transform:translateY(-2px)}}"
+            f".shortcut span{{display:grid;place-items:center;width:48px;height:48px;background:{shortcut_inner_bg};border:1px solid {c['border']};border-radius:10px;font-size:22px;font-weight:600}}"
+            f".shortcut b{{font-size:13px;font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}}"
+            f".shortcut-delete{{position:absolute;top:-4px;right:-4px;width:24px;height:24px;background:{c['error']};color:white;border-radius:50%;display:none;align-items:center;justify-content:center;font-size:10px;text-decoration:none;z-index:10;box-shadow:0 2px 6px rgba(0,0,0,0.2)}}"
+            ".shortcut-wrap:hover .shortcut-delete{display:flex}"
+            f".shortcut-add{{width:200px;background:{card_bg};border:1px solid {c['border']};border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px}}"
+            f".shortcut-add input,.settings-form input,.settings-form select{{background:{c['input']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:8px;font-size:14px}}"
+            f".shortcut-add input:focus,.settings-form input:focus,.settings-form select:focus{{border-color:{c['accent']};outline:none}}.shortcut-add button,.settings-form button{{background:{c['accent']};color:white;border:0;border-radius:8px;padding:9px;font-size:14px;cursor:pointer;transition:background .12s}}.shortcut-add button:hover,.settings-form button:hover{{background:{c['accent_hover']}}}"
             f".settings-section{{margin:24px 48px;max-width:760px}}.settings-section h2{{color:{c['muted']};font-size:13px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px}}"
             f".settings-card{{background:{c['panel']};border:1px solid {c['border']};border-radius:12px;padding:18px;margin-bottom:16px}}"
             f".settings-form{{margin:24px 48px;background:{c['panel']};border:1px solid {c['border']};border-radius:12px;padding:18px;max-width:760px;display:flex;flex-direction:column;gap:14px}}.settings-form label{{display:flex;justify-content:space-between;gap:18px;align-items:center}}"
