@@ -525,6 +525,11 @@ class BrowserApp:
         if QWebEnginePage:
             tab.page = BrowserPage(self, tab)
             view.setPage(tab.page)
+        view.loadStarted.connect(lambda t=tab: self._on_view_load_started(t))
+        view.loadProgress.connect(lambda progress, t=tab: self._on_view_load_progress(t, progress))
+        view.loadFinished.connect(lambda ok, t=tab: self._on_view_load_finished(t, ok))
+        view.urlChanged.connect(lambda qurl, t=tab: self._on_view_url_changed(t, qurl))
+        view.titleChanged.connect(lambda title, t=tab: self._on_view_title_changed(t, title))
         index = self.tabs.addTab(view, "\U0001F576 Incognito" if incognito else "New Tab")
         self.tabs.setCurrentIndex(index)
         view.setProperty("browser_tab", tab)
@@ -604,6 +609,16 @@ class BrowserApp:
                 event.error = str(exc)
                 self._record_event(event)
                 self._render_error(tab, "Invalid URL", str(exc))
+                return
+
+            if not self._should_use_custom_loader(parsed.host):
+                self._navigate_with_webengine(
+                    parsed.raw,
+                    parsed.host,
+                    tab,
+                    add_history=add_history,
+                    record_navigation=record_navigation,
+                )
                 return
 
             event.url = parsed.raw
@@ -708,6 +723,62 @@ class BrowserApp:
             title = f"{response.status_code} {response.status_text}".strip()
             self._render_error(tab, title or "HTTP Error", response.body[:3000], code=response.status_code)
 
+    def _navigate_with_webengine(
+        self,
+        url: str,
+        host: str,
+        tab: BrowserTab,
+        add_history: bool = True,
+        record_navigation: bool = True,
+    ):
+        if record_navigation and tab.current_url and tab.current_url != url:
+            tab.back_stack.append(tab.current_url)
+            tab.forward_stack.clear()
+
+        tab.current_url = url
+        tab.title = self._title_for(host, tab.incognito)
+        tab.last_response = None
+        tab.last_event = None
+        self._update_tab_label(tab)
+        if add_history and not tab.incognito:
+            self._add_history(url)
+            self._save_state()
+        self._set_status("Loading page in Qt WebEngine...")
+        tab.view.load(QUrl(url))
+
+    def _on_view_load_started(self, tab: BrowserTab):
+        if tab.current_url.startswith(("http://", "https://")) and not self._should_use_custom_loader_from_url(tab.current_url):
+            self._set_status("Loading page in Qt WebEngine...")
+
+    def _on_view_load_progress(self, tab: BrowserTab, progress: int):
+        if tab.current_url.startswith(("http://", "https://")) and not self._should_use_custom_loader_from_url(tab.current_url):
+            self._set_status(f"Loading page in Qt WebEngine... {progress}%")
+
+    def _on_view_load_finished(self, tab: BrowserTab, ok: bool):
+        if not tab.current_url.startswith(("http://", "https://")):
+            return
+        if self._should_use_custom_loader_from_url(tab.current_url):
+            return
+        self._set_status("Ready." if ok else "Page load failed.")
+        self._refresh_all()
+        self._sync_toolbar()
+
+    def _on_view_url_changed(self, tab: BrowserTab, url: QUrl):
+        target = url.toString()
+        if not target.startswith(("http://", "https://")):
+            return
+        if self._should_use_custom_loader_from_url(target):
+            return
+        tab.current_url = target
+        self._sync_toolbar()
+
+    def _on_view_title_changed(self, tab: BrowserTab, title: str):
+        if not title or tab.current_url.startswith("internal:"):
+            return
+        tab.title = title[:80]
+        self._update_tab_label(tab)
+        self._sync_toolbar()
+
     def _load_same_origin_assets(self, html_body: str, ip: str, port: int, tab: BrowserTab) -> str:
         """Inline same-origin CSS as <style> tags and convert same-origin images to data URIs."""
         host = tab.last_event.host if tab.last_event else ""
@@ -719,16 +790,31 @@ class BrowserApp:
         ]
         img_pattern = r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*>'
 
-        def _is_same_origin(url: str) -> bool:
-            lower = url.lower()
-            if lower.startswith(("http://", "https://")):
-                return False
-            return url.startswith("/") or (
-                not url.startswith("//")
-                and not url.startswith("data:")
-                and not url.startswith("javascript:")
-                and "#" not in url.split("/")[0]
-            )
+        def _is_same_origin(url_str: str) -> tuple[bool, str]:
+            """Returns (is_same_origin, path_only)."""
+            parsed = urlparse(url_str)
+            # Handle data URIs and other schemes
+            if parsed.scheme and parsed.scheme not in ("http", "https"):
+                return False, url_str
+            
+            # If no netloc, it's relative
+            if not parsed.netloc:
+                # Still check if it looks like a protocol-relative URL that urlparse might have missed 
+                # (though urlparse usually gets //host/path)
+                if url_str.startswith("//"):
+                    # This shouldn't happen with urlparse usually, but just in case
+                    return False, url_str
+                return True, url_str
+
+            # Absolute or protocol-relative: compare hostnames
+            if parsed.hostname == host:
+                # Return the path and query part only for the request
+                path = parsed.path or "/"
+                if parsed.query:
+                    path += f"?{parsed.query}"
+                return True, path
+            
+            return False, url_str
 
         def _skip_external(url: str, tag: str) -> str:
             if tab.last_event:
@@ -740,11 +826,12 @@ class BrowserApp:
             for match in reversed(matches):
                 full_tag = match.group(0)
                 href = match.group(1)
-                if not _is_same_origin(href):
+                is_same, request_path = _is_same_origin(href)
+                if not is_same:
                     html_body = html_body[:match.start()] + _skip_external(href, full_tag) + html_body[match.end():]
                     continue
                 try:
-                    resp = self.http_client.get(ip=ip, port=port, path=href, host=host, use_tls=use_tls)
+                    resp = self.http_client.get(ip=ip, port=port, path=request_path, host=host, use_tls=use_tls)
                     if resp.is_ok:
                         replacement = f"<style>{resp.body}</style>"
                         html_body = html_body[:match.start()] + replacement + html_body[match.end():]
@@ -755,12 +842,13 @@ class BrowserApp:
         for match in reversed(img_matches):
             full_tag = match.group(0)
             src = match.group(1)
-            if src.startswith("data:") or not _is_same_origin(src):
-                if not src.startswith("data:") and _is_same_origin(src) is False:
+            is_same, request_path = _is_same_origin(src)
+            if not is_same:
+                if not src.startswith("data:") and is_same is False:
                     html_body = html_body[:match.start()] + _skip_external(src, full_tag) + html_body[match.end():]
                 continue
             try:
-                resp = self.http_client.get(ip=ip, port=port, path=src, host=host, use_tls=use_tls)
+                resp = self.http_client.get(ip=ip, port=port, path=request_path, host=host, use_tls=use_tls)
                 if resp.is_ok:
                     mime = resp.headers.get("Content-Type", "application/octet-stream")
                     encoded = base64.b64encode(resp.body_bytes).decode("ascii")
@@ -1439,6 +1527,18 @@ class BrowserApp:
         except OSError:
             return False
         return value.count(".") == 3
+
+    def _should_use_custom_loader(self, host: str) -> bool:
+        host = (host or "").strip().lower()
+        return bool(host) and (
+            host == "localhost"
+            or host.endswith(".local")
+            or self._is_ipv4(host)
+        )
+
+    def _should_use_custom_loader_from_url(self, url: str) -> bool:
+        parsed = urlparse(url)
+        return self._should_use_custom_loader(parsed.hostname or "")
 
     @staticmethod
     def _request_path(raw_url: str, fallback_path: str) -> str:
