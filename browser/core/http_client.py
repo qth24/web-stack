@@ -4,6 +4,7 @@ Supports: GET, POST
 """
 
 import socket
+import ssl
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -59,19 +60,20 @@ class HTTPClient:
         path: str,
         host: str,
         extra_headers: Optional[dict] = None,
+        use_tls: bool = False,
     ) -> HTTPResponse:
         """Sends GET request"""
         request = self._build_request("GET", path, host, extra_headers=extra_headers)
-        return self._send(ip, port, request)
+        return self._send(ip, port, request, use_tls=use_tls, host=host)
 
-    def post(self, ip: str, port: int, path: str, host: str, body: str, content_type: str = "application/x-www-form-urlencoded") -> HTTPResponse:
+    def post(self, ip: str, port: int, path: str, host: str, body: str, content_type: str = "application/x-www-form-urlencoded", use_tls: bool = False) -> HTTPResponse:
         """Sends POST request with body"""
         extra_headers = {
             "Content-Type": content_type,
             "Content-Length": str(len(body.encode("utf-8"))),
         }
         request = self._build_request("POST", path, host, extra_headers, body)
-        return self._send(ip, port, request)
+        return self._send(ip, port, request, use_tls=use_tls, host=host)
 
     def _build_request(
         self,
@@ -105,13 +107,19 @@ class HTTPClient:
         request = "\r\n".join(lines) + "\r\n\r\n" + body
         return request
 
-    def _send(self, ip: str, port: int, request: str) -> HTTPResponse:
+    def _send(self, ip: str, port: int, request: str, use_tls: bool = False, host: str = "") -> HTTPResponse:
         """Sends request via TCP and receives entire response"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(self.timeout)
 
         try:
             sock.connect((ip, port))
+
+            if use_tls:
+                # Use unverified context to disable strict validation (allows self-signed certs, etc.)
+                context = ssl._create_unverified_context()
+                sock = context.wrap_socket(sock, server_hostname=host)
+
             sock.sendall(request.encode("utf-8"))
 
             # Receive response - read chunks until connection closes
@@ -130,6 +138,8 @@ class HTTPClient:
 
         except ConnectionRefusedError:
             raise HTTPError(f"Could not connect to HTTP server at {ip}:{port}")
+        except ssl.SSLError as e:
+            raise HTTPError(f"TLS/SSL Handshake failed: {e}")
         except socket.timeout:
             raise HTTPError(f"HTTP server did not respond after {self.timeout}s")
         finally:

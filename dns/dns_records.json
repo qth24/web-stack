@@ -8,5 +8,6 @@
   "info.cern.ch": {"ip": "188.184.67.127", "ttl": 60},
   "example.com": {"ip": "104.20.23.154", "ttl": 60},
   "example.org": {"ip": "104.20.26.136", "ttl": 60},
-  "httpbin.org": {"ip": "34.234.10.121", "ttl": 60}
+  "httpbin.org": {"ip": "34.234.10.121", "ttl": 60},
+  "badssl.com": {"ip": "104.154.89.105", "ttl": 60}
 }

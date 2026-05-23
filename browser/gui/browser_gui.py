@@ -68,6 +68,7 @@ from browser.core.config import (
     ENABLE_DNS_CACHE,
     HOME_URL,
     HTTP_DEFAULT_PORT,
+    HTTPS_DEFAULT_PORT,
     SEARCH_URL,
     STATE_PATH,
     BROWSER_THEME,
@@ -85,6 +86,7 @@ class BrowserSettings:
     dns_port: int = DNS_PORT
     dns_timeout: float = DNS_TIMEOUT
     http_default_port: int = HTTP_DEFAULT_PORT
+    https_default_port: int = HTTPS_DEFAULT_PORT
     enable_dns_cache: bool = ENABLE_DNS_CACHE
     home_url: str = HOME_URL
     search_url: str = SEARCH_URL
@@ -628,7 +630,13 @@ class BrowserApp:
             event.dns_ip = dns_ip
             event.dns_from_cache = dns_from_cache
             event.dns_ttl_remaining = dns_ttl_remaining
-            http_port = parsed.port if parsed.port not in (80, 443) else self.settings.http_default_port
+            
+            # Use appropriate default port based on protocol
+            if parsed.port in (80, 443):
+                http_port = self.settings.https_default_port if parsed.protocol == "https" else self.settings.http_default_port
+            else:
+                http_port = parsed.port
+                
             event.endpoint = f"{dns_ip}:{http_port}"
             self._set_status("Connecting...")
 
@@ -643,6 +651,7 @@ class BrowserApp:
                     path=request_path,
                     host=parsed.host,
                     extra_headers=request_headers,
+                    use_tls=(parsed.protocol == "https"),
                 )
             except HTTPError as exc:
                 event.status = self._http_error_status(str(exc))
@@ -676,7 +685,8 @@ class BrowserApp:
 
     def _render_response(self, tab: BrowserTab, response: HTTPResponse, ip: str, port: int, path: str):
         content_type = response.headers.get("Content-Type", "").lower()
-        base_url = QUrl(f"http://{ip}:{port}{path}")
+        protocol = "https" if tab.last_event and tab.last_event.url.startswith("https://") else "http"
+        base_url = QUrl(f"{protocol}://{ip}:{port}{path}")
 
         # Determine HTTP cache state
         if response.status_code == 304:
@@ -701,6 +711,7 @@ class BrowserApp:
     def _load_same_origin_assets(self, html_body: str, ip: str, port: int, tab: BrowserTab) -> str:
         """Inline same-origin CSS as <style> tags and convert same-origin images to data URIs."""
         host = tab.last_event.host if tab.last_event else ""
+        use_tls = tab.last_event.url.startswith("https://") if tab.last_event else False
 
         css_link_patterns = [
             r'<link\s+[^>]*rel=["\']stylesheet["\'][^>]*href=["\']([^"\']+)["\'][^>]*>',
@@ -733,7 +744,7 @@ class BrowserApp:
                     html_body = html_body[:match.start()] + _skip_external(href, full_tag) + html_body[match.end():]
                     continue
                 try:
-                    resp = self.http_client.get(ip=ip, port=port, path=href, host=host)
+                    resp = self.http_client.get(ip=ip, port=port, path=href, host=host, use_tls=use_tls)
                     if resp.is_ok:
                         replacement = f"<style>{resp.body}</style>"
                         html_body = html_body[:match.start()] + replacement + html_body[match.end():]
@@ -749,7 +760,7 @@ class BrowserApp:
                     html_body = html_body[:match.start()] + _skip_external(src, full_tag) + html_body[match.end():]
                 continue
             try:
-                resp = self.http_client.get(ip=ip, port=port, path=src, host=host)
+                resp = self.http_client.get(ip=ip, port=port, path=src, host=host, use_tls=use_tls)
                 if resp.is_ok:
                     mime = resp.headers.get("Content-Type", "application/octet-stream")
                     encoded = base64.b64encode(resp.body_bytes).decode("ascii")
@@ -1572,6 +1583,9 @@ class BrowserApp:
             dns_timeout=self._setting_float(raw, "dns_timeout", "BROWSER_DNS_TIMEOUT", DNS_TIMEOUT),
             http_default_port=self._setting_int(
                 raw, "http_default_port", "BROWSER_HTTP_DEFAULT_PORT", HTTP_DEFAULT_PORT
+            ),
+            https_default_port=self._setting_int(
+                raw, "https_default_port", "BROWSER_HTTPS_DEFAULT_PORT", HTTPS_DEFAULT_PORT
             ),
             enable_dns_cache=bool(
                 self._setting_raw(raw, "enable_dns_cache", "BROWSER_ENABLE_DNS_CACHE", ENABLE_DNS_CACHE)

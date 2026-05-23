@@ -45,6 +45,7 @@ _load_env_file(ENV_PATH)
 
 HOST = _get_str("HTTP_HOST", "0.0.0.0")
 PORT = _get_int("HTTP_PORT", 8000)
+HTTPS_PORT = _get_int("HTTP_HTTPS_PORT", 8443)
 BUFFER_SIZE = _get_int("HTTP_BUFFER_SIZE", 4096)
 SERVER_NAME = _get_str("HTTP_SERVER_NAME", "UIT-HTTP-Server/1.0")
 
