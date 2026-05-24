@@ -40,6 +40,17 @@ def _get_int(name: str, default: int) -> int:
         return default
 
 
+def _get_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    return _get_str(name, str(default)).lower() in {"1", "true", "yes", "on"}
+
+
 _load_env_file(ENV_PATH)
 
 
@@ -58,3 +69,26 @@ else:
 
 CACHE_MAX_SIZE = _get_int("HTTP_CACHE_MAX_SIZE", 100)
 CACHE_TTL = _get_int("HTTP_CACHE_TTL", 60)
+
+ENABLE_HSTS = _get_str("HTTP_ENABLE_HSTS", "false").strip().lower() in {"1", "true", "yes", "on"}
+HSTS_MAX_AGE = _get_int("HTTP_HSTS_MAX_AGE", 31536000)
+HSTS_INCLUDE_SUBDOMAINS = _get_str("HTTP_HSTS_INCLUDE_SUBDOMAINS", "false").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_CSP = _get_str("HTTP_ENABLE_CSP", "true").strip().lower() in {"1", "true", "yes", "on"}
+CSP_POLICY = _get_str(
+    "HTTP_CSP_POLICY",
+    "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+    "form-action 'self'; object-src 'none'; script-src 'none'; "
+    "style-src 'self'; img-src 'self' data:; font-src 'self'; "
+    "connect-src 'self'; manifest-src 'self'",
+)
+ENABLE_WAF = _get_bool("HTTP_ENABLE_WAF", True)
+
+PROXY_ROUTES_PATH = _get_str("HTTP_PROXY_ROUTES_PATH", "proxy_routes.json")
+_proxy_path = Path(PROXY_ROUTES_PATH).expanduser()
+if _proxy_path.is_absolute():
+    PROXY_ROUTES_FILE = _proxy_path
+else:
+    PROXY_ROUTES_FILE = HTTP_DIR / PROXY_ROUTES_PATH
+PROXY_CONNECT_TIMEOUT = _get_float("HTTP_PROXY_CONNECT_TIMEOUT", 3.0)
+PROXY_READ_TIMEOUT = _get_float("HTTP_PROXY_READ_TIMEOUT", 10.0)
+PROXY_BUFFER_SIZE = _get_int("HTTP_PROXY_BUFFER_SIZE", 4096)

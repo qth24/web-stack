@@ -25,12 +25,13 @@ from router import (
     handle_request,
     serve_static_file,
     resolve_static_path,
-    SECURITY_HEADERS,
     create_text_response,
     create_json_response,
 )
+from security import build_security_headers, BASELINE_HEADERS, waf_inspect
 from static_cache import StaticCache, static_cache
 from mime_types import get_mime_type, MIME_TYPES
+from proxy import match_proxy_route, ProxyRoundRobin, forward_request, _proxy_error
 from config import PUBLIC_DIR, CACHE_TTL, SERVER_NAME
 
 
@@ -80,10 +81,13 @@ class TestParseRequest(unittest.TestCase):
         self.assertIn("Empty", str(ctx.exception))
 
     def test_non_utf8(self):
-        raw = b"\xff\xfe GET / HTTP/1.1\r\n\r\n"
-        with self.assertRaises(ValueError) as ctx:
-            parse_request(raw)
-        self.assertIn("UTF-8", str(ctx.exception))
+        """Non-UTF8 body bytes are preserved as-is in body_bytes.
+        Headers with high-byte chars parse via ISO-8859-1."""
+        raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n" + b"\xff\xfe\x00"
+        result = parse_request(raw)
+        self.assertEqual(result["method"], "GET")
+        self.assertEqual(result["body"], "\ufffd\ufffd\x00")
+        self.assertEqual(result["body_bytes"], b"\xff\xfe\x00")
 
     def test_invalid_request_line(self):
         """Request line with wrong number of parts."""
@@ -178,14 +182,14 @@ class TestRouter(unittest.TestCase):
         return status_line, headers, body
 
     def test_get_root_200(self):
-        req = {"method": "GET", "target": "/", "headers": {}, "body": ""}
+        req = {"method": "GET", "target": "/", "headers": {}, "body": "", "scheme": "http"}
         resp = handle_request(req)
         status_line, _, body = self._parse_response(resp)
         self.assertIn("200", status_line)
         self.assertTrue(len(body) > 0)
 
     def test_get_health_200_json(self):
-        req = {"method": "GET", "target": "/health", "headers": {}, "body": ""}
+        req = {"method": "GET", "target": "/health", "headers": {}, "body": "", "scheme": "http"}
         resp = handle_request(req)
         status_line, headers, body = self._parse_response(resp)
         self.assertIn("200", status_line)
@@ -194,19 +198,19 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(data["status"], "ok")
 
     def test_post_root_405(self):
-        req = {"method": "POST", "target": "/", "headers": {}, "body": ""}
+        req = {"method": "POST", "target": "/", "headers": {}, "body": "", "scheme": "http"}
         resp = handle_request(req)
         status_line, _, body = self._parse_response(resp)
         self.assertIn("405", status_line)
 
     def test_get_nonexistent_404(self):
-        req = {"method": "GET", "target": "/nonexistent", "headers": {}, "body": ""}
+        req = {"method": "GET", "target": "/nonexistent", "headers": {}, "body": "", "scheme": "http"}
         resp = handle_request(req)
         status_line, _, body = self._parse_response(resp)
         self.assertIn("404", status_line)
 
     def test_delete_root_405(self):
-        req = {"method": "DELETE", "target": "/", "headers": {}, "body": ""}
+        req = {"method": "DELETE", "target": "/", "headers": {}, "body": "", "scheme": "http"}
         resp = handle_request(req)
         status_line, _, _ = self._parse_response(resp)
         self.assertIn("405", status_line)
@@ -270,7 +274,7 @@ class TestStaticFileServing(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestSecurityHeaders(unittest.TestCase):
-    """Verify all responses include security headers."""
+    """Verify all responses include baseline security headers."""
 
     def _parse_response(self, response_bytes):
         head, _, body = response_bytes.partition(b"\r\n\r\n")
@@ -281,37 +285,67 @@ class TestSecurityHeaders(unittest.TestCase):
             headers[key] = value
         return headers
 
-    def _assert_security_headers(self, headers):
-        for key, expected_value in SECURITY_HEADERS.items():
+    def _assert_baseline_headers(self, headers):
+        for key, expected_value in BASELINE_HEADERS.items():
             self.assertEqual(
                 headers.get(key),
                 expected_value,
                 f"Missing or wrong security header: {key}",
             )
 
-    def test_static_file_has_security_headers(self):
+    def test_static_file_has_baseline_headers(self):
         from router import serve_static_file
         resp = serve_static_file("/")
         headers = self._parse_response(resp)
-        self._assert_security_headers(headers)
+        self._assert_baseline_headers(headers)
 
-    def test_health_has_security_headers(self):
-        req = {"method": "GET", "target": "/health", "headers": {}, "body": ""}
+    def test_static_file_has_csp_when_enabled(self):
+        from router import serve_static_file
+        from config import ENABLE_CSP, CSP_POLICY
+        resp = serve_static_file("/")
+        headers = self._parse_response(resp)
+        if ENABLE_CSP:
+            self.assertIn("Content-Security-Policy", headers)
+            self.assertEqual(headers["Content-Security-Policy"], CSP_POLICY)
+        else:
+            self.assertNotIn("Content-Security-Policy", headers)
+
+    def test_health_has_baseline_headers(self):
+        req = {"method": "GET", "target": "/health", "headers": {}, "body": "", "scheme": "http"}
         resp = handle_request(req)
         headers = self._parse_response(resp)
-        self._assert_security_headers(headers)
+        self._assert_baseline_headers(headers)
 
-    def test_404_has_security_headers(self):
-        req = {"method": "GET", "target": "/nonexistent", "headers": {}, "body": ""}
+    def test_404_has_baseline_headers(self):
+        req = {"method": "GET", "target": "/nonexistent", "headers": {}, "body": "", "scheme": "http"}
         resp = handle_request(req)
         headers = self._parse_response(resp)
-        self._assert_security_headers(headers)
+        self._assert_baseline_headers(headers)
 
-    def test_405_has_security_headers(self):
-        req = {"method": "POST", "target": "/", "headers": {}, "body": ""}
+    def test_405_has_baseline_headers(self):
+        req = {"method": "POST", "target": "/", "headers": {}, "body": "", "scheme": "http"}
         resp = handle_request(req)
         headers = self._parse_response(resp)
-        self._assert_security_headers(headers)
+        self._assert_baseline_headers(headers)
+
+    def test_hsts_absent_on_http(self):
+        resp = serve_static_file("/", scheme="http")
+        headers = self._parse_response(resp)
+        self.assertNotIn("Strict-Transport-Security", headers)
+
+    def test_hsts_present_on_https_when_enabled(self):
+        from router import serve_static_file
+        from config import ENABLE_HSTS, HSTS_MAX_AGE, HSTS_INCLUDE_SUBDOMAINS
+        resp = serve_static_file("/", scheme="https")
+        headers = self._parse_response(resp)
+        if ENABLE_HSTS:
+            self.assertIn("Strict-Transport-Security", headers)
+            sts = headers["Strict-Transport-Security"]
+            self.assertIn(f"max-age={HSTS_MAX_AGE}", sts)
+            if HSTS_INCLUDE_SUBDOMAINS:
+                self.assertIn("includeSubDomains", sts)
+        else:
+            self.assertNotIn("Strict-Transport-Security", headers)
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +598,527 @@ class TestMimeTypes(unittest.TestCase):
             get_mime_type(Path("README")),
             "application/octet-stream",
         )
+
+
+# ---------------------------------------------------------------------------
+# TestWAF
+# ---------------------------------------------------------------------------
+
+class TestWAF(unittest.TestCase):
+    """Tests for the basic WAF request inspection."""
+
+    def _make_req(self, target, headers=None):
+        req = {"method": "GET", "target": target, "headers": headers or {}, "body": "", "scheme": "http"}
+        return req
+
+    def _parse_response(self, response_bytes):
+        head, _, body = response_bytes.partition(b"\r\n\r\n")
+        lines = head.decode("utf-8").split("\r\n")
+        status_line = lines[0]
+        return status_line, body
+
+    def test_block_raw_traversal(self):
+        req = self._make_req("/../../../etc/passwd")
+        resp = handle_request(req)
+        status_line, body = self._parse_response(resp)
+        self.assertIn("403", status_line)
+
+    def test_block_percent_decoded_traversal(self):
+        req = self._make_req("/..%2F..%2F..%2Fetc/passwd")
+        resp = handle_request(req)
+        status_line, body = self._parse_response(resp)
+        self.assertIn("403", status_line)
+
+    def test_block_dot_git(self):
+        req = self._make_req("/.git/config")
+        resp = handle_request(req)
+        status_line, _ = self._parse_response(resp)
+        self.assertIn("403", status_line)
+
+    def test_block_dot_env(self):
+        req = self._make_req("/.env")
+        resp = handle_request(req)
+        status_line, _ = self._parse_response(resp)
+        self.assertIn("403", status_line)
+
+    def test_block_etc_passwd(self):
+        req = self._make_req("/etc/passwd")
+        resp = handle_request(req)
+        status_line, _ = self._parse_response(resp)
+        self.assertIn("403", status_line)
+
+    def test_block_script_injection(self):
+        req = self._make_req("/page?q=<script>alert(1)</script>")
+        resp = handle_request(req)
+        status_line, _ = self._parse_response(resp)
+        self.assertIn("403", status_line)
+
+    def test_allow_normal_routes(self):
+        for target in ["/", "/health", "/styles.css?v=1"]:
+            with self.subTest(target=target):
+                req = self._make_req(target)
+                resp = handle_request(req)
+                status_line, _ = self._parse_response(resp)
+                self.assertNotIn("403", status_line)
+
+    def test_safe_post_returns_405_not_403(self):
+        req = {"method": "POST", "target": "/", "headers": {}, "body": "", "scheme": "http"}
+        resp = handle_request(req)
+        status_line, _ = self._parse_response(resp)
+        self.assertIn("405", status_line)
+
+    def test_404_has_security_headers_via_waf(self):
+        from security import BASELINE_HEADERS
+        head, _, _ = handle_request(self._make_req("/nonexistent")).partition(b"\r\n\r\n")
+        headers_text = head.decode("utf-8")
+        for key, val in BASELINE_HEADERS.items():
+            self.assertIn(f"{key}: {val}", headers_text)
+
+    def test_403_has_security_headers(self):
+        from security import BASELINE_HEADERS
+        resp = handle_request(self._make_req("/.git/config"))
+        head, _, _ = resp.partition(b"\r\n\r\n")
+        headers_text = head.decode("utf-8")
+        for key, val in BASELINE_HEADERS.items():
+            self.assertIn(f"{key}: {val}", headers_text)
+
+    def test_block_via_x_original_url_header(self):
+        req = self._make_req("/safe", headers={"x-original-url": "/.git/config"})
+        resp = handle_request(req)
+        status_line, _ = self._parse_response(resp)
+        self.assertIn("403", status_line)
+
+    def test_block_via_x_rewrite_url_header(self):
+        req = self._make_req("/safe", headers={"x-rewrite-url": "/../../../etc/passwd"})
+        resp = handle_request(req)
+        status_line, _ = self._parse_response(resp)
+        self.assertIn("403", status_line)
+
+    def test_null_byte_blocked(self):
+        req = self._make_req("/page\0hidden")
+        resp = handle_request(req)
+        status_line, _ = self._parse_response(resp)
+        self.assertIn("403", status_line)
+
+
+# ---------------------------------------------------------------------------
+# TestSecurityConfig
+# ---------------------------------------------------------------------------
+
+class TestSecurityConfig(unittest.TestCase):
+    """Tests for CSP/HSTS/WAF config toggles."""
+
+    def _parse_response(self, response_bytes):
+        head, _, body = response_bytes.partition(b"\r\n\r\n")
+        lines = head.decode("utf-8").split("\r\n")
+        headers = {}
+        for line in lines[1:]:
+            key, value = line.split(": ", 1)
+            headers[key] = value
+        return headers
+
+    def test_200_has_csp_when_enabled(self):
+        resp = serve_static_file("/")
+        headers = self._parse_response(resp)
+        from config import ENABLE_CSP
+        if ENABLE_CSP:
+            self.assertIn("Content-Security-Policy", headers)
+
+    def test_200_has_hsts_only_on_https_and_enabled(self):
+        from config import ENABLE_HSTS
+        resp_http = serve_static_file("/", scheme="http")
+        headers_http = self._parse_response(resp_http)
+        self.assertNotIn("Strict-Transport-Security", headers_http)
+
+        resp_https = serve_static_file("/", scheme="https")
+        headers_https = self._parse_response(resp_https)
+        if ENABLE_HSTS:
+            self.assertIn("Strict-Transport-Security", headers_https)
+            sts = headers_https["Strict-Transport-Security"]
+            from config import HSTS_MAX_AGE, HSTS_INCLUDE_SUBDOMAINS
+            self.assertIn(f"max-age={HSTS_MAX_AGE}", sts)
+            if HSTS_INCLUDE_SUBDOMAINS:
+                self.assertIn("includeSubDomains", sts)
+
+    def test_304_has_baseline_headers(self):
+        from security import BASELINE_HEADERS
+        resp1 = serve_static_file("/index.html")
+        head1, _, _ = resp1.partition(b"\r\n\r\n")
+        lines = head1.decode("utf-8").split("\r\n")
+        etag = None
+        for line in lines[1:]:
+            if line.startswith("ETag: "):
+                etag = line.split(": ", 1)[1]
+                break
+        self.assertIsNotNone(etag)
+
+        resp2 = serve_static_file("/index.html", request_headers={"if-none-match": etag})
+        h2 = self._parse_response(resp2)
+        for key, val in BASELINE_HEADERS.items():
+            self.assertEqual(h2.get(key), val, f"304 missing header: {key}")
+
+    def test_400_and_500_have_baseline_headers(self):
+        from security import BASELINE_HEADERS
+        from http_response import build_response, STATUS_TEXT
+        scheme = "http"
+        sh = build_security_headers(scheme)
+        sh["Content-Type"] = "text/plain; charset=utf-8"
+        resp400 = build_response(400, headers=sh, body="bad")
+        resp500 = build_response(500, headers=sh, body="err")
+        for resp in (resp400, resp500):
+            head, _, _ = resp.partition(b"\r\n\r\n")
+            htext = head.decode("utf-8")
+            for key, val in BASELINE_HEADERS.items():
+                self.assertIn(f"{key}: {val}", htext)
+
+
+# ---------------------------------------------------------------------------
+# TestProxyRouteMatching
+# ---------------------------------------------------------------------------
+
+class TestProxyRouteMatching(unittest.TestCase):
+    """Tests for proxy route matching logic."""
+
+    def setUp(self):
+        self.routes = [
+            {
+                "name": "api",
+                "hosts": ["api.local"],
+                "path_prefixes": ["/api"],
+                "upstreams": [{"scheme": "http", "host": "127.0.0.1", "port": 9001}],
+            },
+            {
+                "name": "web",
+                "hosts": ["myweb.local"],
+                "path_prefixes": None,
+                "upstreams": [{"scheme": "http", "host": "127.0.0.1", "port": 9002}],
+            },
+            {
+                "name": "catchall",
+                "hosts": None,
+                "path_prefixes": ["/proxy"],
+                "upstreams": [{"scheme": "http", "host": "127.0.0.1", "port": 9003}],
+            },
+        ]
+
+    def test_match_by_host_only(self):
+        req = {"method": "GET", "target": "/anything", "headers": {"host": "myweb.local"}}
+        idx = match_proxy_route(req, self.routes)
+        self.assertEqual(idx, 1)
+
+    def test_match_by_path_only(self):
+        req = {"method": "GET", "target": "/proxy/data", "headers": {"host": "unknown.local"}}
+        idx = match_proxy_route(req, self.routes)
+        self.assertEqual(idx, 2)
+
+    def test_match_by_host_and_path(self):
+        req = {"method": "GET", "target": "/api/v1/users", "headers": {"host": "api.local"}}
+        idx = match_proxy_route(req, self.routes)
+        self.assertEqual(idx, 0)
+
+    def test_first_match_wins(self):
+        routes = [
+            {
+                "name": "first",
+                "hosts": ["shared.local"],
+                "path_prefixes": ["/api"],
+                "upstreams": [],
+            },
+            {
+                "name": "second",
+                "hosts": ["shared.local"],
+                "path_prefixes": ["/api"],
+                "upstreams": [],
+            },
+        ]
+        req = {"method": "GET", "target": "/api/test", "headers": {"host": "shared.local"}}
+        idx = match_proxy_route(req, routes)
+        self.assertEqual(idx, 0)
+
+    def test_no_match_returns_none(self):
+        req = {"method": "GET", "target": "/other", "headers": {"host": "other.local"}}
+        idx = match_proxy_route(req, self.routes)
+        self.assertIsNone(idx)
+
+    def test_unmatched_falls_back_to_local(self):
+        from router import handle_request
+        req = {"method": "GET", "target": "/", "headers": {"host": "localhost"}, "body": "", "body_bytes": b"", "scheme": "http"}
+        resp = handle_request(req)
+        self.assertIn(b"200", resp[:100])
+
+    def test_host_match_ignores_port(self):
+        req = {"method": "GET", "target": "/", "headers": {"host": "myweb.local:8000"}}
+        idx = match_proxy_route(req, self.routes)
+        self.assertEqual(idx, 1)
+
+    def test_path_prefix_match_strips_query(self):
+        req = {"method": "GET", "target": "/proxy/data?q=1", "headers": {"host": "any.local"}}
+        idx = match_proxy_route(req, self.routes)
+        self.assertEqual(idx, 2)
+
+
+# ---------------------------------------------------------------------------
+# TestProxyForwarding (integration with fake upstream)
+# ---------------------------------------------------------------------------
+
+class TestProxyForwarding(unittest.TestCase):
+    """Integration tests with a simple TCP echo/relay upstream."""
+
+    def setUp(self):
+        self._routes = [
+            {
+                "name": "test_upstream",
+                "hosts": None,
+                "path_prefixes": ["/proxy"],
+                "upstreams": [
+                    {"scheme": "http", "host": "127.0.0.1", "port": 19999},
+                ],
+            }
+        ]
+
+    def test_proxy_hop_by_hop_headers_stripped(self):
+        """Client hop-by-hop headers (Transfer-Encoding, Keep-Alive) are stripped.
+        Proxy adds its own Connection: close."""
+        import threading
+        import socket as sock_mod
+
+        received_upstream = {}
+
+        def fake_upstream():
+            srv = sock_mod.socket(sock_mod.AF_INET, sock_mod.SOCK_STREAM)
+            srv.setsockopt(sock_mod.SOL_SOCKET, sock_mod.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", 19999))
+            srv.listen(1)
+            srv.settimeout(2.0)
+            try:
+                conn, _ = srv.accept()
+                with conn:
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    received_upstream["raw"] = data
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+            finally:
+                srv.close()
+
+        t = threading.Thread(target=fake_upstream, daemon=True)
+        t.start()
+        import time
+        time.sleep(0.05)
+
+        req = {
+            "method": "GET", "target": "/proxy/test",
+            "headers": {
+                "host": "test.local",
+                "keep-alive": "timeout=5",
+                "transfer-encoding": "identity",
+            },
+            "body": "", "body_bytes": b"", "scheme": "http",
+        }
+        rr = ProxyRoundRobin()
+        resp = forward_request(req, self._routes, 0, "127.0.0.1", rr)
+        t.join(timeout=2)
+        self.assertIn(b"200", resp[:100])
+
+        raw = received_upstream.get("raw", b"")
+        raw_str = raw.decode("iso-8859-1")
+        self.assertNotIn("keep-alive", raw_str.lower())
+        self.assertNotIn("transfer-encoding", raw_str.lower())
+        self.assertIn("x-forwarded-for", raw_str.lower())
+        self.assertIn("x-forwarded-proto", raw_str.lower())
+        self.assertIn("x-forwarded-host", raw_str.lower())
+
+    def test_proxy_method_and_path_preserved(self):
+        import threading
+        import socket as sock_mod
+
+        received = {}
+
+        def fake_upstream():
+            srv = sock_mod.socket(sock_mod.AF_INET, sock_mod.SOCK_STREAM)
+            srv.setsockopt(sock_mod.SOL_SOCKET, sock_mod.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", 19999))
+            srv.listen(1)
+            srv.settimeout(2.0)
+            try:
+                conn, _ = srv.accept()
+                with conn:
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    received["request"] = data
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+            finally:
+                srv.close()
+
+        t = threading.Thread(target=fake_upstream, daemon=True)
+        t.start()
+        import time
+        time.sleep(0.05)
+
+        req = {
+            "method": "POST", "target": "/proxy/submit?foo=bar",
+            "headers": {"host": "test.local", "content-type": "text/plain"},
+            "body": "hello body", "body_bytes": b"hello body", "scheme": "http",
+        }
+        rr = ProxyRoundRobin()
+        resp = forward_request(req, self._routes, 0, "127.0.0.1", rr)
+        t.join(timeout=2)
+        self.assertIn(b"200", resp)
+
+        raw = received.get("request", b"")
+        raw_str = raw.decode("iso-8859-1")
+        self.assertIn("POST /proxy/submit?foo=bar", raw_str)
+        self.assertIn("hello body", raw_str)
+
+    def test_proxy_binary_body_preserved(self):
+        import threading
+        import socket as sock_mod
+        import hashlib
+
+        binary_body = bytes(range(256))
+        received = {}
+
+        def fake_upstream():
+            srv = sock_mod.socket(sock_mod.AF_INET, sock_mod.SOCK_STREAM)
+            srv.setsockopt(sock_mod.SOL_SOCKET, sock_mod.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", 19999))
+            srv.listen(1)
+            srv.settimeout(2.0)
+            try:
+                conn, _ = srv.accept()
+                with conn:
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    received["raw"] = data
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+            finally:
+                srv.close()
+
+        t = threading.Thread(target=fake_upstream, daemon=True)
+        t.start()
+        import time
+        time.sleep(0.05)
+
+        req = {
+            "method": "POST", "target": "/proxy/bin",
+            "headers": {"host": "test.local"},
+            "body": "", "body_bytes": binary_body, "scheme": "http",
+        }
+        rr = ProxyRoundRobin()
+        forward_request(req, self._routes, 0, "127.0.0.1", rr)
+        t.join(timeout=2)
+
+        raw = received.get("raw", b"")
+        self.assertIn(binary_body, raw)
+        self.assertEqual(len(raw), len(binary_body) + raw.index(binary_body))
+
+
+# ---------------------------------------------------------------------------
+# TestProxyRoundRobin
+# ---------------------------------------------------------------------------
+
+class TestProxyRoundRobin(unittest.TestCase):
+    def test_round_robin_alternates(self):
+        from proxy import ProxyRoundRobin
+        rr = ProxyRoundRobin()
+        results = [rr.next_index(0, 3) for _ in range(6)]
+        self.assertEqual(results, [0, 1, 2, 0, 1, 2])
+
+    def test_separate_routes_independent(self):
+        from proxy import ProxyRoundRobin
+        rr = ProxyRoundRobin()
+        a = rr.next_index(0, 2)
+        b = rr.next_index(1, 2)
+        self.assertEqual(a, 0)
+        self.assertEqual(b, 0)
+
+
+# ---------------------------------------------------------------------------
+# TestChunkedTransferDetection
+# ---------------------------------------------------------------------------
+
+class TestChunkedTransferDetection(unittest.TestCase):
+    def test_chunked_returns_501(self):
+        from server import _has_chunked_transfer
+        req = {"headers": {"transfer-encoding": "chunked"}}
+        self.assertTrue(_has_chunked_transfer(req))
+
+        req2 = {"headers": {"transfer-encoding": "identity"}}
+        self.assertFalse(_has_chunked_transfer(req2))
+
+        req3 = {"headers": {}}
+        self.assertFalse(_has_chunked_transfer(req3))
+
+
+# ---------------------------------------------------------------------------
+# TestProxyErrorCodes
+# ---------------------------------------------------------------------------
+
+class TestProxyErrorCodes(unittest.TestCase):
+    def test_502_bad_gateway(self):
+        from proxy import _proxy_error
+        resp = _proxy_error(502, "Bad Gateway")
+        self.assertIn(b"502", resp[:100])
+
+    def test_504_gateway_timeout(self):
+        from proxy import _proxy_error
+        resp = _proxy_error(504, "Gateway Timeout")
+        self.assertIn(b"504", resp[:100])
+
+    def test_upstream_connection_refused_returns_502(self):
+        from proxy import forward_request, ProxyRoundRobin
+        routes = [{
+            "name": "bad",
+            "hosts": None,
+            "upstreams": [{"scheme": "http", "host": "127.0.0.1", "port": 65535}],
+        }]
+        req = {
+            "method": "GET", "target": "/",
+            "headers": {"host": "test.local"},
+            "body": "", "body_bytes": b"", "scheme": "http",
+        }
+        rr = ProxyRoundRobin()
+        resp = forward_request(req, routes, 0, "127.0.0.1", rr)
+        self.assertIn(b"502", resp[:100])
+
+
+# ---------------------------------------------------------------------------
+# TestProxyRequestBodyBytes
+# ---------------------------------------------------------------------------
+
+class TestProxyRequestBodyBytes(unittest.TestCase):
+    def test_parse_request_preserves_body_bytes(self):
+        from http_parser import parse_request
+        raw = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\nbody bytes"
+        req = parse_request(raw)
+        self.assertEqual(req["body"], "body bytes")
+        self.assertEqual(req["body_bytes"], b"body bytes")
+
+    def test_parse_request_binary_body_bytes(self):
+        from http_parser import parse_request
+        raw = b"POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\n" + b"\x00\x01\x02\x03"
+        req = parse_request(raw)
+        self.assertEqual(req["body_bytes"], b"\x00\x01\x02\x03")
+        self.assertEqual(len(req["body_bytes"]), 4)
+
+    def test_full_binary_range_in_body(self):
+        from http_parser import parse_request
+        binary = bytes(range(256))
+        raw = b"POST /bin HTTP/1.1\r\nHost: example.com\r\nContent-Length: 256\r\n\r\n" + binary
+        req = parse_request(raw)
+        self.assertEqual(req["body_bytes"], binary)
+        self.assertEqual(len(req["body_bytes"]), 256)
 
 
 if __name__ == "__main__":

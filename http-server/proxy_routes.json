@@ -1,0 +1,13 @@
+{
+  "routes": [
+    {
+      "name": "api",
+      "hosts": ["myweb.local", "api.local"],
+      "path_prefixes": ["/api"],
+      "upstreams": [
+        {"scheme": "http", "host": "127.0.0.1", "port": 9001},
+        {"scheme": "https", "host": "example.com", "port": 443, "verify_tls": true}
+      ]
+    }
+  ]
+}

@@ -21,6 +21,15 @@ Implemented:
 - Return `404 Not Found` for missing files
 - Return `405 Method Not Allowed` for unsupported methods
 - Serve static files from the `public/` folder
+- Security headers on every response (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, Cross-Origin headers)
+- Optional HSTS on HTTPS responses (opt-in via `HTTP_ENABLE_HSTS`)
+- Strict Content-Security-Policy by default (configurable via `HTTP_CSP_POLICY`)
+- Basic WAF blocking traversal, sensitive-path probes, and script injection
+- Return `403 Forbidden` for blocked requests
+- TLS/HTTPS support on `8443` with self-signed certificate
+- Reverse proxy + load balancer: route by host + path prefix, round-robin upstreams, failover
+- HTTP/1.1 upstream forwarding with hop-by-hop header stripping, X-Forwarded-* injection
+- Chunked transfer encoding returns `501 Not Implemented`
 
 ## Project structure
 
@@ -37,7 +46,10 @@ Implemented:
     ├── http_response.py
     ├── mime_types.py
     ├── router.py
-    └── server.py
+    ├── security.py
+    ├── server.py
+    ├── static_cache.py
+    └── proxy.py
 ```
 
 ## Run the server

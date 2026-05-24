@@ -9,6 +9,7 @@ from config import BUFFER_SIZE, HOST, PORT, HTTPS_PORT
 from http_parser import parse_request
 from http_response import build_response
 from router import handle_request
+from security import build_security_headers
 
 HTTP_DIR = Path(__file__).resolve().parent.parent
 CERT_FILE = HTTP_DIR / "src" / "cert.pem"
@@ -39,14 +40,6 @@ def generate_cert() -> None:
         print(f"Unexpected error generating certificate: {e}")
 
 
-def create_bad_request_response(message: str) -> bytes:
-    return build_response(
-        status_code=400,
-        headers={"Content-Type": "text/plain; charset=utf-8"},
-        body=f"400 Bad Request\n{message}",
-    )
-
-
 def receive_http_request(client_socket: socket.socket) -> bytes:
     raw_data = b""
 
@@ -59,11 +52,50 @@ def receive_http_request(client_socket: socket.socket) -> bytes:
         except (socket.timeout, ConnectionResetError):
             break
 
+    if b"\r\n\r\n" not in raw_data:
+        return raw_data
+
+    header_bytes, existing_body = raw_data.split(b"\r\n\r\n", 1)
+
+    try:
+        header_text = header_bytes.decode("iso-8859-1")
+    except UnicodeDecodeError:
+        return raw_data
+
+    content_length = 0
+    for line in header_text.split("\r\n"):
+        if line.lower().startswith("content-length:"):
+            try:
+                content_length = int(line.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+            break
+
+    if content_length > 0:
+        body_bytes = existing_body
+        while len(body_bytes) < content_length:
+            needed = content_length - len(body_bytes)
+            try:
+                chunk = client_socket.recv(min(BUFFER_SIZE, needed))
+                if not chunk:
+                    break
+                body_bytes += chunk
+            except (socket.timeout, ConnectionResetError):
+                break
+        return header_bytes + b"\r\n\r\n" + body_bytes
+
     return raw_data
+
+
+def _has_chunked_transfer(request: dict) -> bool:
+    headers = request.get("headers", {})
+    te = headers.get("transfer-encoding", "")
+    return "chunked" in te.lower()
 
 
 def run_server_loop(server_socket: socket.socket, protocol_name: str) -> None:
     print(f"{protocol_name} loop started.")
+    scheme = protocol_name.lower()
     while True:
         try:
             client_socket, client_address = server_socket.accept()
@@ -78,14 +110,34 @@ def run_server_loop(server_socket: socket.socket, protocol_name: str) -> None:
                     if not raw_request:
                         return
                     request = parse_request(raw_request)
+                    request["scheme"] = scheme
+                    request["client_ip"] = client_address[0]
                     print(f"[{protocol_name}] {client_address[0]} {request['method']} {request['target']}")
-                    response = handle_request(request)
+
+                    if _has_chunked_transfer(request):
+                        resp_headers = build_security_headers(scheme)
+                        resp_headers["Content-Type"] = "text/plain; charset=utf-8"
+                        response = build_response(
+                            status_code=501,
+                            headers=resp_headers,
+                            body="501 Not Implemented\nTransfer-Encoding: chunked is not supported",
+                        )
+                    else:
+                        response = handle_request(request)
                 except ValueError as error:
-                    response = create_bad_request_response(str(error))
+                    resp_headers = build_security_headers(scheme)
+                    resp_headers["Content-Type"] = "text/plain; charset=utf-8"
+                    response = build_response(
+                        status_code=400,
+                        headers=resp_headers,
+                        body=f"400 Bad Request\n{error}",
+                    )
                 except Exception as error:
+                    resp_headers = build_security_headers(scheme)
+                    resp_headers["Content-Type"] = "text/plain; charset=utf-8"
                     response = build_response(
                         status_code=500,
-                        headers={"Content-Type": "text/plain; charset=utf-8"},
+                        headers=resp_headers,
                         body=f"500 Internal Server Error\n{error}",
                     )
 
