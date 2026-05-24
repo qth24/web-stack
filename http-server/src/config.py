@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 HTTP_DIR = Path(__file__).resolve().parent.parent
-ENV_PATH = HTTP_DIR / ".env"
+ENV_PATH = HTTP_DIR.parent / ".env"
 
 
 def _load_env_file(path: Path) -> None:

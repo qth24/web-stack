@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 BROWSER_DIR = Path(__file__).resolve().parents[1]
-ENV_PATH = BROWSER_DIR / ".env"
+ENV_PATH = BROWSER_DIR.parent / ".env"
 CONFIGURED_KEYS = set(os.environ)
 
 

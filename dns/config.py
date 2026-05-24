@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 DNS_DIR = Path(__file__).resolve().parent
-ENV_PATH = DNS_DIR / ".env"
+ENV_PATH = DNS_DIR.parent / ".env"
 
 
 def _load_env_file(path: Path) -> None:

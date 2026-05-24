@@ -16,13 +16,13 @@ No frameworks. No libraries (except PySide6 for the browser GUI). Just sockets, 
 
 ### Startup Order
 
-Start services in this order:
+Start the entire stack with one command:
 
+```bash
+python3 start.py
 ```
-1. DNS Server    (python3 dns/dns_server.py)
-2. HTTP Server   (python3 http-server/src/server.py)
-3. Browser       (python3 browser/gui/browser_gui.py)
-```
+
+This launches the DNS server, HTTP server, and browser GUI in the correct order.
 
 ### Request Flow
 
@@ -93,34 +93,22 @@ The primary demo domain is `myweb.local`, which resolves to `127.0.0.1`. Additio
 - Python 3.8+
 - PySide6 (for the browser GUI)
 
-### 1. DNS Server
-
 ```bash
-cp dns/.env.example dns/.env
-python3 dns/dns_server.py
-```
-
-### 2. HTTP Server
-
-```bash
-python3 http-server/src/server.py
-```
-
-### 3. Browser
-
-```bash
+# 1. Install browser dependencies
 pip install -r browser/requirements.txt
-cp browser/.env.example browser/.env
-python3 browser/gui/browser_gui.py
+
+# 2. Copy the unified environment file
+cp .env.example .env
+
+# 3. Start the entire stack
+python3 start.py
 ```
 
 Then enter `http://myweb.local/` in the browser URL bar.
 
 ## Configuration
 
-Each module uses a `.env` file for configuration. Copy `.env.example` to `.env` and edit as needed.
-
-### DNS Server (`dns/.env`)
+All configuration lives in a single `.env` file at the project root. Copy `.env.example` to `.env` and edit as needed.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -128,19 +116,9 @@ Each module uses a `.env` file for configuration. Copy `.env.example` to `.env` 
 | `DNS_PORT` | `5336` | UDP port |
 | `DNS_RECORDS_PATH` | `dns/dns_records.json` | Path to DNS records file |
 | `DNS_DEFAULT_TTL` | `5` | Default TTL in seconds |
-
-### HTTP Server (`http-server/.env`)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
 | `HTTP_HOST` | `0.0.0.0` | Host to bind TCP socket |
 | `HTTP_PORT` | `8000` | TCP port |
 | `HTTP_PUBLIC_DIR` | `public/` | Static files directory |
-
-### Browser (`browser/.env`)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
 | `BROWSER_DNS_HOST` | `127.0.0.1` | DNS server host |
 | `BROWSER_DNS_PORT` | `5336` | DNS server port |
 | `BROWSER_HTTP_DEFAULT_PORT` | `8000` | Default HTTP port for URLs without explicit port |
