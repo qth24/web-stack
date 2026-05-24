@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 try:
     from . import config
     from .dns_cache import DNSCache
-    from .dns_resolver import StaticResolver, load_records_from_file
+    from .dns_resolver import Resolver, StaticResolver, create_resolver, load_records_from_file
     from .protocol import (
         STATUS_BAD_REQUEST,
         STATUS_ERROR,
@@ -25,7 +25,7 @@ try:
 except ImportError:
     import config
     from dns_cache import DNSCache
-    from dns_resolver import StaticResolver, load_records_from_file
+    from dns_resolver import Resolver, StaticResolver, create_resolver, load_records_from_file
     from protocol import (
         STATUS_BAD_REQUEST,
         STATUS_ERROR,
@@ -66,7 +66,7 @@ class DNSRequestHandler:
     def __init__(
         self,
         cache: DNSCache,
-        resolver: StaticResolver,
+        resolver: Resolver,
         max_request_bytes: int = MAX_UDP_REQUEST_BYTES,
         rate_limiter: Optional[RateLimiter] = None,
     ) -> None:
@@ -123,7 +123,17 @@ class DNSRequestHandler:
             log_event("CACHE EXPIRED", f"{request.domain} stale entry removed", "38;5;214")
 
         log_event("CACHE MISS", f"{request.domain} not in cache", "33")
-        resolved = self.resolver.resolve(request.domain)
+        try:
+            resolved = self.resolver.resolve(request.domain)
+        except Exception as exc:
+            log_event("ERROR", f"Resolver failure for {request.domain}: {exc}", "31")
+            return build_error_response(
+                STATUS_ERROR,
+                "Resolver error",
+                request_id=request.request_id,
+                domain=request.domain,
+                qtype=request.qtype,
+            )
 
         if resolved is None:
             log_event("NXDOMAIN", f"{request.domain} not found", "31")
@@ -211,15 +221,26 @@ class MiniDNSServer:
 def build_server(args: argparse.Namespace) -> MiniDNSServer:
     records = load_records_from_file(args.records, logger=log_event)
     cache = DNSCache()
+    static_resolver = StaticResolver(records=records, default_ttl=args.default_ttl)
 
-    resolver = StaticResolver(
-        records=records,
-        default_ttl=args.default_ttl,
-    )
+    try:
+        resolver = create_resolver(
+            mode=config.RESOLVER_MODE,
+            records=records,
+            default_ttl=args.default_ttl,
+            forward_ttl_seconds=config.FORWARD_TTL_SECONDS,
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
 
-    if not resolver.records:
+    static_record_count = len(static_resolver.records)
+    if config.RESOLVER_MODE == "static" and not static_record_count:
         log_event("ERROR", "No valid static records loaded. All lookups will return NXDOMAIN.", "31")
-    log_event("INFO", f"Loaded {len(resolver.records)} static DNS records")
+    log_event("INFO", f"Loaded {static_record_count} static DNS records")
+    log_event(
+        "INFO",
+        f"DNS resolver mode: {config.RESOLVER_MODE} (forward ttl={config.FORWARD_TTL_SECONDS}s)",
+    )
 
     rate_limiter = RateLimiter(
         max_queries=config.RATE_LIMIT_MAX_QUERIES,

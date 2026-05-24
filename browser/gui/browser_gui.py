@@ -68,6 +68,7 @@ from browser.core.config import (
     DNS_PORT,
     DNS_TIMEOUT,
     ENABLE_DNS_CACHE,
+    FORCE_CUSTOM_DNS_ALL_HOSTS,
     HOME_URL,
     HTTP_DEFAULT_PORT,
     HTTPS_DEFAULT_PORT,
@@ -78,6 +79,7 @@ from browser.core.config import (
     BROWSER_FONT_SIZE,
 )
 from browser.core.dns_client import DNSClient, DNSError
+from browser.core.host_routing import is_ipv4_address, should_use_custom_dns
 from browser.core.http_client import HTTPClient, HTTPError, HTTPResponse
 from browser.core.url_parser import URLParseError, parse_url
 
@@ -1908,18 +1910,12 @@ class BrowserApp:
 
     @staticmethod
     def _is_ipv4(value: str) -> bool:
-        try:
-            socket.inet_aton(value)
-        except OSError:
-            return False
-        return value.count(".") == 3
+        return is_ipv4_address(value)
 
     def _should_use_custom_loader(self, host: str) -> bool:
-        host = (host or "").strip().lower()
-        return bool(host) and (
-            host == "localhost"
-            or host.endswith(".local")
-            or self._is_ipv4(host)
+        return should_use_custom_dns(
+            host,
+            force_all_hosts=FORCE_CUSTOM_DNS_ALL_HOSTS,
         )
 
     def _should_use_custom_loader_from_url(self, url: str) -> bool:

@@ -1,8 +1,8 @@
-"""Static resolver layer for mini DNS module."""
+"""Resolver layer for the mini DNS module."""
 
 import json
 import socket
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Protocol, Tuple
 
 
 def normalize_domain(raw_domain: str) -> str:
@@ -35,6 +35,13 @@ def is_valid_ipv4(ip_address: str) -> bool:
     except OSError:
         return False
     return True
+
+
+class Resolver(Protocol):
+    """A domain resolver that returns (ip, ttl) or None for NXDOMAIN."""
+
+    def resolve(self, domain: str) -> Optional[Tuple[str, int]]:
+        ...
 
 
 class StaticResolver:
@@ -76,6 +83,69 @@ class StaticResolver:
 
     def resolve(self, domain: str) -> Optional[Tuple[str, int]]:
         return self.records.get(domain)
+
+
+class SystemForwardingResolver:
+    """Resolve domains through the host operating system's resolver."""
+
+    def __init__(self, ttl_seconds: int = 60) -> None:
+        self.ttl_seconds = max(1, int(ttl_seconds))
+
+    def resolve(self, domain: str) -> Optional[Tuple[str, int]]:
+        try:
+            address_infos = socket.getaddrinfo(
+                domain,
+                None,
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+            )
+        except socket.gaierror:
+            return None
+
+        for _family, _socktype, _proto, _canonname, sockaddr in address_infos:
+            ip_address = sockaddr[0]
+            if is_valid_ipv4(ip_address):
+                return ip_address, self.ttl_seconds
+
+        return None
+
+
+class HybridResolver:
+    """Resolve from local records first, then fall back to the system resolver."""
+
+    def __init__(self, static_resolver: Resolver, forwarding_resolver: Resolver) -> None:
+        self.static_resolver = static_resolver
+        self.forwarding_resolver = forwarding_resolver
+
+    def resolve(self, domain: str) -> Optional[Tuple[str, int]]:
+        result = self.static_resolver.resolve(domain)
+        if result is not None:
+            return result
+        return self.forwarding_resolver.resolve(domain)
+
+
+def create_resolver(
+    mode: str,
+    records: Dict[str, Any],
+    default_ttl: int = 10,
+    forward_ttl_seconds: int = 60,
+) -> Resolver:
+    """Build a resolver for the configured mode."""
+    normalized_mode = (mode or "").strip().lower()
+    static_resolver = StaticResolver(records, default_ttl)
+
+    if normalized_mode == "static":
+        return static_resolver
+
+    forwarding_resolver = SystemForwardingResolver(ttl_seconds=forward_ttl_seconds)
+
+    if normalized_mode == "forward":
+        return forwarding_resolver
+
+    if normalized_mode == "hybrid":
+        return HybridResolver(static_resolver, forwarding_resolver)
+
+    raise ValueError(f"Unsupported DNS resolver mode: {mode!r}")
 
 
 def load_records_from_file(path: str, logger: Optional[Callable[[str, str, Optional[str]], None]] = None) -> Dict[str, Any]:

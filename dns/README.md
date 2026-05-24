@@ -5,7 +5,7 @@
 This module simulates a simple DNS server for the Mini Web Stack project.
 
 - Receives UDP JSON v1 requests from clients/browsers.
-- Resolves `domain -> ip` from a static records table.
+- Resolves `domain -> ip` from a static records table and/or the system resolver.
 - Supports TTL cache with lazy deletion.
 - Returns JSON responses for easy client parsing.
 
@@ -40,7 +40,7 @@ dns/
 - `dns/dns_resolver.py`: resolver layer
   - loads records from `dns_records.json`
   - normalizes/validates domain names
-  - resolves only from the static records table
+  - supports `static`, `forward`, and `hybrid` resolver modes
 - `dns/dns_records.json`: static domain mapping table
 
 ## Request Processing Flow
@@ -54,8 +54,9 @@ dns/
    - EXPIRED: remove stale record
    - MISS: resolve through resolver
 5. Resolver checks the static table
-6. If resolved: update cache with `expire_at = now + ttl`
-7. If still not found: return `NXDOMAIN`
+6. In `hybrid` mode, unresolved names are forwarded through the system resolver
+7. If resolved: update cache with `expire_at = now + ttl`
+8. If still not found: return `NXDOMAIN`
 
 ## Request/Response Examples
 
@@ -116,9 +117,17 @@ DNS_BIND_HOST=0.0.0.0
 DNS_PORT=5336
 DNS_RECORDS_PATH=dns/dns_records.json
 DNS_DEFAULT_TTL=5
+DNS_RESOLVER_MODE=hybrid
+DNS_FORWARD_TTL_SECONDS=60
 ```
 
 Environment variables override values in `.env`. CLI arguments still work for one-off overrides.
+
+Resolver modes:
+
+- `static`: resolve only from `dns_records.json`
+- `forward`: resolve only through the system resolver
+- `hybrid`: use static records first, then forward misses
 
 Use `DNS_PORT=5336` for local development without `sudo`. Use `DNS_PORT=53` on a VPS/production DNS server.
 
@@ -155,5 +164,5 @@ On Linux, binding to UDP port `53` may require elevated permission or a service 
 - Single-threaded; no background cleanup thread.
 - UDP packet size is limited.
 - Strict UTF-8/JSON parsing prevents exceptions from crashing the server loop.
-- This server is intentionally authoritative/static-only; unknown domains return `NXDOMAIN`.
+- This server can run in static-only, forward-only, or hybrid mode.
 - Only `qtype: "A"` is supported in the current JSON v1 contract.

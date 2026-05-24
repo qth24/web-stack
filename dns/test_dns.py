@@ -19,7 +19,10 @@ if __name__ == "__main__" and __package__ is None:
 
 from dns.dns_cache import DNSCache
 from dns.dns_resolver import (
+    HybridResolver,
     StaticResolver,
+    SystemForwardingResolver,
+    create_resolver,
     is_valid_domain,
     is_valid_ipv4,
     normalize_domain,
@@ -30,6 +33,7 @@ from dns.protocol import (
     QTYPE_A,
     RESOLVE_OPERATION,
     STATUS_BAD_REQUEST,
+    STATUS_ERROR,
     STATUS_NXDOMAIN,
     STATUS_OK,
     STATUS_RATE_LIMITED,
@@ -238,6 +242,73 @@ class TestStaticResolver(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestForwardingResolvers
+# ---------------------------------------------------------------------------
+
+
+class _FakeForwardingResolver:
+    def __init__(self, result=None, side_effect=None):
+        self.result = result
+        self.side_effect = side_effect
+        self.calls = []
+
+    def resolve(self, domain: str):
+        self.calls.append(domain)
+        if self.side_effect is not None:
+            raise self.side_effect
+        return self.result
+
+
+class TestForwardingResolvers(unittest.TestCase):
+    def test_system_forwarding_resolver_returns_first_ipv4_and_fixed_ttl(self):
+        resolver = SystemForwardingResolver(ttl_seconds=45)
+        with patch(
+            "dns.dns_resolver.socket.getaddrinfo",
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.35", 0)),
+            ],
+        ):
+            self.assertEqual(resolver.resolve("example.com"), ("93.184.216.34", 45))
+
+    def test_system_forwarding_resolver_returns_none_on_gaierror(self):
+        resolver = SystemForwardingResolver(ttl_seconds=45)
+        with patch("dns.dns_resolver.socket.getaddrinfo", side_effect=socket.gaierror):
+            self.assertIsNone(resolver.resolve("missing.example"))
+
+    def test_hybrid_resolver_prefers_static_records(self):
+        static_resolver = StaticResolver({"example.local": {"ip": "127.0.0.1", "ttl": 11}}, default_ttl=10)
+        forwarding_resolver = _FakeForwardingResolver(side_effect=AssertionError("forwarder should not be called"))
+        resolver = HybridResolver(static_resolver, forwarding_resolver)
+        self.assertEqual(resolver.resolve("example.local"), ("127.0.0.1", 11))
+
+    def test_hybrid_resolver_falls_back_to_forwarding(self):
+        static_resolver = StaticResolver({}, default_ttl=10)
+        forwarding_resolver = _FakeForwardingResolver(result=("93.184.216.34", 30))
+        resolver = HybridResolver(static_resolver, forwarding_resolver)
+        self.assertEqual(resolver.resolve("example.com"), ("93.184.216.34", 30))
+        self.assertEqual(forwarding_resolver.calls, ["example.com"])
+
+    def test_create_resolver_uses_expected_mode(self):
+        self.assertIsInstance(
+            create_resolver("static", SAMPLE_RECORDS, default_ttl=10, forward_ttl_seconds=20),
+            StaticResolver,
+        )
+        self.assertIsInstance(
+            create_resolver("forward", SAMPLE_RECORDS, default_ttl=10, forward_ttl_seconds=20),
+            SystemForwardingResolver,
+        )
+        self.assertIsInstance(
+            create_resolver("hybrid", SAMPLE_RECORDS, default_ttl=10, forward_ttl_seconds=20),
+            HybridResolver,
+        )
+
+    def test_create_resolver_rejects_invalid_mode(self):
+        with self.assertRaises(ValueError):
+            create_resolver("weird", SAMPLE_RECORDS, default_ttl=10, forward_ttl_seconds=20)
+
+
+# ---------------------------------------------------------------------------
 # TestNormalizeDomain
 # ---------------------------------------------------------------------------
 
@@ -430,6 +501,29 @@ class TestDNSRequestHandler(unittest.TestCase):
         self.assertEqual(resp["ip"], "127.0.0.1")
         self.assertEqual(resp["ttl"], 5)
 
+    def test_forwarded_lookup_is_cached_with_forward_ttl(self):
+        handler = DNSRequestHandler(
+            cache=DNSCache(),
+            resolver=SystemForwardingResolver(ttl_seconds=45),
+            rate_limiter=None,
+        )
+        payload_1 = _make_payload("example.com", request_id="req-forward-1")
+        payload_2 = _make_payload("example.com", request_id="req-forward-2")
+
+        with patch(
+            "dns.dns_resolver.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
+        ) as mocked_getaddrinfo:
+            with patch("time.time", return_value=self.now):
+                resp1 = handler.handle_packet(payload_1, CLIENT_ADDR)
+                resp2 = handler.handle_packet(payload_2, CLIENT_ADDR)
+
+        self.assertEqual(resp1["status"], STATUS_OK)
+        self.assertEqual(resp1["ttl"], 45)
+        self.assertEqual(resp2["status"], STATUS_OK)
+        self.assertEqual(resp2["ttl"], 45)
+        self.assertEqual(mocked_getaddrinfo.call_count, 1)
+
     def test_nxdomain_for_unknown_domain(self):
         resp = self._handle("unknown.local", request_id="req-miss")
         self.assertEqual(resp["version"], PROTOCOL_VERSION)
@@ -535,6 +629,18 @@ class TestDNSRequestHandler(unittest.TestCase):
             resp = handler.handle_packet(payload, CLIENT_ADDR)
         self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
         self.assertIn("too large", resp["message"])
+
+    def test_resolver_exception_returns_error_with_request_context(self):
+        handler = DNSRequestHandler(
+            cache=DNSCache(),
+            resolver=_FakeForwardingResolver(side_effect=RuntimeError("boom")),
+            rate_limiter=None,
+        )
+        with patch("time.time", return_value=self.now):
+            resp = handler.handle_packet(_make_payload("example.com", request_id="req-error"), CLIENT_ADDR)
+        self.assertEqual(resp["status"], STATUS_ERROR)
+        self.assertEqual(resp["id"], "req-error")
+        self.assertEqual(resp["domain"], "example.com")
 
 
 # ---------------------------------------------------------------------------

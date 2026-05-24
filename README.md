@@ -8,7 +8,7 @@ No frameworks. No libraries (except PySide6 for the browser GUI). Just sockets, 
 
 | Module | Port | Protocol | Description |
 |--------|------|----------|-------------|
-| [DNS Server](dns/README.md) | `127.0.0.1:5336` | UDP + JSON | Static DNS resolver with TTL cache |
+| [DNS Server](dns/README.md) | `127.0.0.1:5336` | UDP + JSON | Static-first DNS resolver with forwarding and TTL cache |
 | [HTTP Server](http-server/README.md) | `127.0.0.1:8000` | TCP + HTTP/1.1 | Serves static files from `public/` |
 | [Browser](browser/README.md) | GUI | PySide6 Qt WebEngine | Chrome-like browser with tabs, history, bookmarks, DevTools |
 
@@ -116,11 +116,14 @@ All configuration lives in a single `.env` file at the project root. Copy `.env.
 | `DNS_PORT` | `5336` | UDP port |
 | `DNS_RECORDS_PATH` | `dns/dns_records.json` | Path to DNS records file |
 | `DNS_DEFAULT_TTL` | `5` | Default TTL in seconds |
+| `DNS_RESOLVER_MODE` | `hybrid` | `static`, `hybrid`, or `forward` resolver behavior |
+| `DNS_FORWARD_TTL_SECONDS` | `60` | Cache TTL used for forwarded answers |
 | `HTTP_HOST` | `0.0.0.0` | Host to bind TCP socket |
 | `HTTP_PORT` | `8000` | TCP port |
 | `HTTP_PUBLIC_DIR` | `public/` | Static files directory |
 | `BROWSER_DNS_HOST` | `127.0.0.1` | DNS server host |
 | `BROWSER_DNS_PORT` | `5336` | DNS server port |
+| `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS` | `false` | Route all hostnames through the custom DNS stack |
 | `BROWSER_HTTP_DEFAULT_PORT` | `8000` | Default HTTP port for URLs without explicit port |
 
 Environment variables override `.env` file values.
@@ -153,7 +156,7 @@ Environment variables override `.env` file values.
 
 ### External Domains
 
-The DNS records include real external domains like `example.com` and `httpbin.org`. These resolve to their real IPs, so the browser can attempt to reach them (though the HTTP server only serves local content).
+The DNS records include real external domains like `example.com` and `httpbin.org`. In `hybrid` mode, unlisted domains can also be resolved through the system resolver and cached with `DNS_FORWARD_TTL_SECONDS` (though the HTTP server only serves local content).
 
 ## Integration Test
 
@@ -213,10 +216,12 @@ web-stack/
 │       └── styles.css
 └── browser/
     ├── README.md
+    ├── test_host_routing.py
     ├── test_dns_client.py
     ├── gui/
     │   └── browser_gui.py
     └── core/
+        ├── host_routing.py
         ├── url_parser.py
         ├── dns_client.py
         └── http_client.py

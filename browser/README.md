@@ -4,6 +4,7 @@
 
 - `core/url_parser.py`: parse and validate URL (`http/https`, host, port, path, query).
 - `core/dns_client.py`: send UDP JSON v1 DNS queries to the configured DNS server with TTL cache.
+- `core/host_routing.py`: decide which hostnames should go through the custom DNS stack.
 - `core/http_client.py`: send raw HTTP requests via TCP and parse status, headers, body.
 - `gui/browser_gui.py`: Chrome-like GUI browser with tabs, custom DNS, history, bookmarks, downloads, cookies/session, incognito mode, settings, and DevTools panel.
 
@@ -40,6 +41,7 @@ Use `browser/.env.example` as the template:
 
 - `BROWSER_DNS_HOST`, `BROWSER_DNS_PORT`, `BROWSER_DNS_TIMEOUT`
 - `BROWSER_ENABLE_DNS_CACHE`
+- `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS`
 - `BROWSER_HTTP_DEFAULT_PORT`, `BROWSER_HTTP_TIMEOUT`
 - `BROWSER_HOME_URL`, `BROWSER_SEARCH_URL`, `BROWSER_DEFAULT_BOOKMARKS`
 - `BROWSER_THEME` (`light` or `dark`)
@@ -63,6 +65,8 @@ Use `browser/.env.example` as the template:
 - Built-in error pages for URL, DNS, and HTTP errors.
 
 Search uses `BROWSER_SEARCH_URL`. The default value is an internal search page, so normal search input will not cause a DNS error. Settings can show Google/Bing result-page links without opening those pages through custom DNS.
+
+By default, the custom DNS loader is used for `localhost`, `.local` hostnames, and direct IPv4 addresses. Set `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS=true` to route all hostnames through the custom DNS client.
 
 ## Local state
 
