@@ -99,3 +99,10 @@ HTTP_CACHE_MAX_ENTRY_MB = _get_int("BROWSER_HTTP_CACHE_MAX_ENTRY_MB", 4)
 STATE_DIR = Path(_get_str("BROWSER_STATE_DIR", str(Path.home() / ".mini_web_browser"))).expanduser()
 STATE_PATH = Path(_get_str("BROWSER_STATE_PATH", str(STATE_DIR / "browser_state.json"))).expanduser()
 COOKIE_STATE_PATH = STATE_DIR / "cookies.json"
+
+ENABLE_PHISHING_DETECTION = _get_bool("BROWSER_ENABLE_PHISHING_DETECTION", True)
+PHISHING_SUSPICIOUS_THRESHOLD = _get_int("BROWSER_PHISHING_SUSPICIOUS_THRESHOLD", 31)
+PHISHING_BLOCK_THRESHOLD = _get_int("BROWSER_PHISHING_BLOCK_THRESHOLD", 61)
+PHISHING_RULES_PATH = Path(
+    _get_str("BROWSER_PHISHING_RULES_PATH", str(STATE_DIR / "phishing_rules.json"))
+).expanduser()

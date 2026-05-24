@@ -75,12 +75,16 @@ from browser.core.config import (
     DNS_TIMEOUT,
     ENABLE_DNS_CACHE,
     ENABLE_HTTP_CACHE,
+    ENABLE_PHISHING_DETECTION,
     FORCE_CUSTOM_DNS_ALL_HOSTS,
     HOME_URL,
     HTTP_CACHE_MAX_ENTRY_MB,
     HTTP_CACHE_MAX_MB,
     HTTP_DEFAULT_PORT,
     HTTPS_DEFAULT_PORT,
+    PHISHING_BLOCK_THRESHOLD,
+    PHISHING_RULES_PATH,
+    PHISHING_SUSPICIOUS_THRESHOLD,
     SEARCH_URL,
     STATE_DIR,
     STATE_PATH,
@@ -94,6 +98,16 @@ from browser.core.http_client import HTTPClient, HTTPError, HTTPResponse
 from browser.core.url_parser import URLParseError, parse_url
 from browser.core.cookies import CookieJar
 from browser.core.http_cache import HTTPCache
+from browser.core.phishing import (
+    ThreatAssessment,
+    ReputationData,
+    assess_url,
+    assess_content,
+    load_reputation,
+    load_user_rules_raw,
+    save_user_rules,
+    merge_assessments,
+)
 
 
 @dataclass
@@ -128,6 +142,9 @@ class NetworkEvent:
     request_headers: dict[str, str] = field(default_factory=dict)
     response_headers: dict[str, str] = field(default_factory=dict)
     cache_state: str = ""
+    risk_score: int = 0
+    risk_verdict: str = ""
+    risk_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -142,6 +159,7 @@ class BrowserTab:
     last_event: Optional[NetworkEvent] = None
     incognito: bool = False
     incognito_jar_id: int = 0
+    phishing_assessment: Any = None
 
 
 class BrowserPage(QWebEnginePage if QWebEnginePage else object):
@@ -254,6 +272,9 @@ class BrowserApp:
         self._qt_cookie_store: Any = None
 
         self.http_cache = HTTPCache(STATE_DIR / "http_cache", HTTP_CACHE_MAX_MB, HTTP_CACHE_MAX_ENTRY_MB)
+        self._phishing_enabled = ENABLE_PHISHING_DETECTION
+        self._phishing_reputation = load_reputation(PHISHING_RULES_PATH) if self._phishing_enabled else None
+        self._phishing_allowlist: set[str] = set()
 
         self.dns_client = self._make_dns_client()
         self.http_client = HTTPClient()
@@ -281,15 +302,16 @@ class BrowserApp:
         try:
             profile_dir = str(STATE_DIR / "webengine-profile")
             cache_dir = str(STATE_DIR / "webengine-cache")
-            self._normal_profile = QWebEngineProfile("watercat_normal")
-            self._normal_profile.setPersistentStoragePath(profile_dir)
-            self._normal_profile.setCachePath(cache_dir)
-            self._normal_profile.setHttpCacheType(
+            default_profile = QWebEngineProfile.defaultProfile()
+            default_profile.setPersistentStoragePath(profile_dir)
+            default_profile.setCachePath(cache_dir)
+            default_profile.setHttpCacheType(
                 QWebEngineProfile.HttpCacheType.DiskHttpCache
             )
-            self._normal_profile.setPersistentCookiesPolicy(
+            default_profile.setPersistentCookiesPolicy(
                 QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies
             )
+            self._normal_profile = default_profile
             self._qt_cookie_store = self._normal_profile.cookieStore()
             if self._qt_cookie_store is not None:
                 self._qt_cookie_store.cookieAdded.connect(self._on_qt_cookie_added)
@@ -860,24 +882,6 @@ class BrowserApp:
         if QWebEnginePage:
             tab.page = BrowserPage(self, tab)
             view.setPage(tab.page)
-        if QWebEngineProfile is not None:
-            try:
-                if incognito:
-                    profile = QWebEngineProfile("watercat_incognito")
-                    profile.setPersistentCookiesPolicy(
-                        QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies
-                    )
-                else:
-                    profile = self._normal_profile
-                if profile:
-                    view.page().profile().deleteLater()
-                    tab_page = QWebEnginePage(profile, view)
-                    view.setPage(tab_page)
-                    tab.page = BrowserPage(self, tab)
-                    tab_page.acceptNavigationRequest = lambda url, nav_type, is_main_frame: tab.page.acceptNavigationRequest(url, nav_type, is_main_frame)
-                    tab.page.browser_tab = tab
-            except Exception:
-                pass
         view.loadStarted.connect(lambda t=tab: self._on_view_load_started(t))
         view.loadProgress.connect(lambda progress, t=tab: self._on_view_load_progress(t, progress))
         view.loadFinished.connect(lambda ok, t=tab: self._on_view_load_finished(t, ok))
@@ -967,6 +971,20 @@ class BrowserApp:
                 self._record_event(event)
                 self._render_error(tab, "Invalid URL", str(exc))
                 return
+
+            normalized_url = parsed.raw.lower()
+            if self._phishing_enabled and self._phishing_reputation is not None:
+                if normalized_url not in self._phishing_allowlist:
+                    url_assessment = assess_url(parsed.raw, self._phishing_reputation)
+                    if url_assessment.verdict == "phishing":
+                        self._show_phishing_warning(tab, parsed.raw, url_assessment)
+                        return
+                    if url_assessment.verdict == "suspicious":
+                        event.risk_score = url_assessment.score
+                        event.risk_verdict = url_assessment.verdict
+                        event.risk_reasons = list(url_assessment.reasons)
+                        tab.phishing_assessment = url_assessment
+                        self._set_status(f"Suspicious: {url_assessment.score}")
 
             if not self._should_use_custom_loader(parsed.host):
                 self._navigate_with_webengine(
@@ -1068,11 +1086,78 @@ class BrowserApp:
         if response.is_ok and "text/html" in content_type:
             html_body = self._load_same_origin_assets(response.body, ip, port, tab)
             tab.view.setHtml(html_body, base_url)
+            self._run_post_load_phishing(tab)
         elif response.is_ok:
             self._render_download_page(tab, response)
         else:
             title = f"{response.status_code} {response.status_text}".strip()
             self._render_error(tab, title or "HTTP Error", response.body[:3000], code=response.status_code)
+
+    def _run_post_load_phishing(self, tab: BrowserTab):
+        if not self._phishing_enabled or self._phishing_reputation is None:
+            return
+        if not tab.current_url or tab.current_url.startswith("internal:"):
+            return
+        normalized_url = tab.current_url.lower()
+        if normalized_url in self._phishing_allowlist:
+            return
+
+        try:
+            tab.view.page().toHtml(
+                lambda html: self._on_content_analysis_done(tab, html)
+            )
+        except Exception:
+            pass
+
+    def _on_content_analysis_done(self, tab: BrowserTab, html: str):
+        url = tab.current_url
+        normalized_url = url.lower()
+        if normalized_url in self._phishing_allowlist:
+            return
+
+        pre_assessment = getattr(tab, "phishing_assessment", None)
+        url_assessment = pre_assessment if pre_assessment is not None else assess_url(url, self._phishing_reputation)
+        content_assessment = assess_content(url, html, self._phishing_reputation)
+        merged = merge_assessments(url_assessment, content_assessment)
+
+        if tab.last_event:
+            tab.last_event.risk_score = merged.score
+            tab.last_event.risk_verdict = merged.verdict
+            tab.last_event.risk_reasons = list(merged.reasons)
+
+        if merged.verdict == "phishing":
+            self._show_phishing_warning(tab, url, merged)
+        elif merged.verdict == "suspicious":
+            self._set_status(f"Suspicious: {merged.score}")
+
+    def _show_phishing_warning(self, tab: BrowserTab, url: str, assessment: Any):
+        import urllib.parse
+        encoded_url = urllib.parse.quote_plus(url)
+        reasons_html = "".join(
+            f"<li>{html.escape(r)}</li>" for r in assessment.reasons
+        )
+        body = (
+            "<main class='page-shell error-shell'>"
+            "<section class='surface error-card'>"
+            "<div class='error-icon'>&#128683;</div>"
+            "<p class='eyebrow'>Phishing Warning</p>"
+            f"<h1>{html.escape(assessment.verdict.title())} Site Detected</h1>"
+            f"<p class='lead'>WaterCat blocked this page because it may be a phishing attempt.</p>"
+            f"<div class='kv-list' style='text-align:left;max-width:600px;margin:16px auto'>"
+            f"<div class='kv-row'><span>Target URL</span><b style='overflow-wrap:anywhere'>{html.escape(url)}</b></div>"
+            f"<div class='kv-row'><span>Risk Score</span><b>{assessment.score}</b></div>"
+            f"<div class='kv-row'><span>Verdict</span><b>{html.escape(assessment.verdict)}</b></div>"
+            f"</div>"
+            f"<ul style='text-align:left;max-width:600px;margin:12px auto;color:var(--muted)'>{reasons_html}</ul>"
+            "<div class='action-row center'>"
+            f"<a class='button-link' href='javascript:history.back()'>Go back</a>"
+            f"<a class='button-link' href='internal:phishing-continue?url={encoded_url}'>Continue anyway</a>"
+            "</div></section></main>"
+        )
+        tab.view.setHtml(self._page_html("Phishing Warning", body, error=True))
+        tab.title = "Phishing Warning"
+        self._update_tab_label(tab)
+        self._set_status(f"Phishing blocked: {assessment.score}")
 
     def _navigate_with_webengine(
         self,
@@ -1111,6 +1196,8 @@ class BrowserApp:
         if self._should_use_custom_loader_from_url(tab.current_url):
             return
         self._set_status("Ready." if ok else "Page load failed.")
+        if ok:
+            self._run_post_load_phishing(tab)
         self._refresh_all()
         self._sync_toolbar()
 
@@ -1444,6 +1531,67 @@ class BrowserApp:
             return
         cookie_count = len(self.cookie_jar)
         cache_count = self.http_cache.entry_count()
+
+        blocked_html = ""
+        if self._phishing_reputation:
+            user_rules = load_user_rules_raw(PHISHING_RULES_PATH) if PHISHING_RULES_PATH.exists() else {}
+            user_blocked = set(user_rules.get("blocked_domains", []))
+            user_prefixes = list(user_rules.get("blocked_url_prefixes", []))
+            user_keywords = set(user_rules.get("suspicious_keywords", []))
+            builtin_blocked = self._phishing_reputation.blocked_domains - user_blocked
+
+            def _item_row(label, value, action_url):
+                return (
+                    "<div class='kv-row' style='align-items:center'>"
+                    f"<span>{html.escape(label)}</span>"
+                    "<div style='display:flex;align-items:center;gap:8px'>"
+                    f"<code style='overflow-wrap:anywhere;max-width:240px'>{html.escape(value)}</code>"
+                    f"<a class='ghost-link' href='{action_url}' style='font-size:12px;padding:4px 8px'>Remove</a>"
+                    "</div></div>"
+                )
+
+            blocked_html = "<div class='kv-list'>"
+            if builtin_blocked:
+                builtin_list = ", ".join(sorted(builtin_blocked)[:10])
+                blocked_html += f"<div class='kv-row'><span>Built-in</span><b style='color:var(--muted);font-size:13px'>{html.escape(builtin_list)}</b></div>"
+            for d in sorted(user_blocked):
+                blocked_html += _item_row("User", d, f"internal:phishing-remove-blocked?domain={quote_plus(d)}")
+            for pfx in user_prefixes:
+                blocked_html += _item_row("URL prefix", pfx, f"internal:phishing-remove-prefix?prefix={quote_plus(pfx)}")
+            for kw in sorted(user_keywords):
+                blocked_html += _item_row("Keyword", kw, f"internal:phishing-remove-keyword?keyword={quote_plus(kw)}")
+            blocked_html += "</div>"
+
+            if not user_blocked and not user_prefixes and not user_keywords and not builtin_blocked:
+                blocked_html = "<p style='color:var(--muted)'>No custom rules yet. Add blocked domains, URL prefixes, or suspicious keywords below.</p>"
+
+        phishing_section = ""
+        if self._phishing_enabled:
+            phishing_section = (
+                "<div class='surface'>"
+                + "<div class='surface-head'><div><p class='section-kicker'>Security</p><h2>Phishing rules</h2></div></div>"
+                + blocked_html
+                + "<form class='settings-form' style='margin-top:14px' action='internal:phishing-add-blocked' method='get'>"
+                + "<label class='field'><span>Block domain</span>"
+                + "<div style='display:flex;gap:8px'>"
+                + "<input name='domain' placeholder='evil.example.com'>"
+                + "<button type='submit'>Add</button>"
+                + "</div></label></form>"
+                + "<form class='settings-form' action='internal:phishing-add-prefix' method='get'>"
+                + "<label class='field'><span>Block URL prefix</span>"
+                + "<div style='display:flex;gap:8px'>"
+                + "<input name='prefix' placeholder='https://evil.test/collect'>"
+                + "<button type='submit'>Add</button>"
+                + "</div></label></form>"
+                + "<form class='settings-form' action='internal:phishing-add-keyword' method='get'>"
+                + "<label class='field'><span>Suspicious keyword</span>"
+                + "<div style='display:flex;gap:8px'>"
+                + "<input name='keyword' placeholder='wallet-verify'>"
+                + "<button type='submit'>Add</button>"
+                + "</div></label></form>"
+                + "</div>"
+            )
+
         body = (
             "<main class='page-shell'>"
             + self._page_header(
@@ -1494,7 +1642,9 @@ class BrowserApp:
             + f"<div class='kv-row'><span>Home route</span><b>{html.escape(self.settings.home_url)}</b></div>"
             + f"<div class='kv-row'><span>Search route</span><b>{html.escape(self.settings.search_url)}</b></div>"
             + f"<div class='kv-row'><span>DNS cache</span><b>{'Enabled' if self.settings.enable_dns_cache else 'Disabled'}</b></div>"
-            + "</div></div></section></main>"
+            + "</div></div>"
+            + phishing_section
+            + "</section></main>"
         )
         tab.view.setHtml(self._page_html("Settings", body))
         tab.title = "Settings"
@@ -1959,6 +2109,73 @@ class BrowserApp:
         if action == "clear-cache":
             self.http_cache.clear()
             self._set_status("Browser cache cleared.")
+            self._show_settings_tab()
+            return
+        if action == "phishing-continue":
+            target = values.get("url", [""])[0]
+            if target:
+                decoded = unquote_plus(target)
+                self._phishing_allowlist.add(decoded.lower())
+                self._navigate(decoded, tab=tab, record_navigation=record_navigation)
+            return
+        if action == "phishing-add-blocked":
+            domain = values.get("domain", [""])[0].strip()
+            if domain:
+                rules = load_user_rules_raw(PHISHING_RULES_PATH)
+                rules.setdefault("blocked_domains", [])
+                if domain not in rules["blocked_domains"]:
+                    rules["blocked_domains"].append(domain)
+                    save_user_rules(PHISHING_RULES_PATH, rules)
+                    self._phishing_reputation = load_reputation(PHISHING_RULES_PATH)
+            self._show_settings_tab()
+            return
+        if action == "phishing-remove-blocked":
+            domain = values.get("domain", [""])[0]
+            if domain:
+                rules = load_user_rules_raw(PHISHING_RULES_PATH)
+                rules["blocked_domains"] = [d for d in rules.get("blocked_domains", []) if d != domain]
+                save_user_rules(PHISHING_RULES_PATH, rules)
+                self._phishing_reputation = load_reputation(PHISHING_RULES_PATH)
+            self._show_settings_tab()
+            return
+        if action == "phishing-add-prefix":
+            prefix = values.get("prefix", [""])[0].strip()
+            if prefix:
+                rules = load_user_rules_raw(PHISHING_RULES_PATH)
+                rules.setdefault("blocked_url_prefixes", [])
+                if prefix not in rules["blocked_url_prefixes"]:
+                    rules["blocked_url_prefixes"].append(prefix)
+                    save_user_rules(PHISHING_RULES_PATH, rules)
+                    self._phishing_reputation = load_reputation(PHISHING_RULES_PATH)
+            self._show_settings_tab()
+            return
+        if action == "phishing-remove-prefix":
+            prefix = values.get("prefix", [""])[0]
+            if prefix:
+                rules = load_user_rules_raw(PHISHING_RULES_PATH)
+                rules["blocked_url_prefixes"] = [p for p in rules.get("blocked_url_prefixes", []) if p != prefix]
+                save_user_rules(PHISHING_RULES_PATH, rules)
+                self._phishing_reputation = load_reputation(PHISHING_RULES_PATH)
+            self._show_settings_tab()
+            return
+        if action == "phishing-add-keyword":
+            keyword = values.get("keyword", [""])[0].strip()
+            if keyword:
+                rules = load_user_rules_raw(PHISHING_RULES_PATH)
+                rules.setdefault("suspicious_keywords", [])
+                if keyword not in rules["suspicious_keywords"]:
+                    rules["suspicious_keywords"].append(keyword)
+                    save_user_rules(PHISHING_RULES_PATH, rules)
+                    self._phishing_reputation = load_reputation(PHISHING_RULES_PATH)
+            self._show_settings_tab()
+            return
+        if action == "phishing-remove-keyword":
+            keyword = values.get("keyword", [""])[0]
+            if keyword:
+                rules = load_user_rules_raw(PHISHING_RULES_PATH)
+                rules["suspicious_keywords"] = [k for k in rules.get("suspicious_keywords", []) if k != keyword]
+                save_user_rules(PHISHING_RULES_PATH, rules)
+                self._phishing_reputation = load_reputation(PHISHING_RULES_PATH)
             self._show_settings_tab()
             return
 

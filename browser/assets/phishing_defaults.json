@@ -1,0 +1,59 @@
+{
+  "blocked_domains": [
+    "microsoft365-alert.info",
+    "secure-verify-paypal.net",
+    "appleid-check.tk"
+  ],
+  "blocked_url_prefixes": [],
+  "protected_brands": [
+    {
+      "name": "PayPal",
+      "domains": ["paypal.com", "paypal.me", "paypalobjects.com"]
+    },
+    {
+      "name": "Google",
+      "domains": ["google.com", "accounts.google.com", "mail.google.com", "drive.google.com"]
+    },
+    {
+      "name": "Microsoft",
+      "domains": ["microsoft.com", "login.microsoftonline.com", "outlook.com", "live.com", "office.com"]
+    },
+    {
+      "name": "Apple",
+      "domains": ["apple.com", "icloud.com", "appleid.apple.com"]
+    },
+    {
+      "name": "Amazon",
+      "domains": ["amazon.com", "amazon.co.uk", "amazon.de", "amazonaws.com"]
+    },
+    {
+      "name": "Facebook",
+      "domains": ["facebook.com", "fb.com", "messenger.com"]
+    },
+    {
+      "name": "Netflix",
+      "domains": ["netflix.com"]
+    },
+    {
+      "name": "Dropbox",
+      "domains": ["dropbox.com"]
+    },
+    {
+      "name": "Wells Fargo",
+      "domains": ["wellsfargo.com"]
+    },
+    {
+      "name": "Chase",
+      "domains": ["chase.com"]
+    },
+    {
+      "name": "Bank of America",
+      "domains": ["bankofamerica.com", "bofa.com"]
+    }
+  ],
+  "suspicious_keywords": [
+    "login", "verify", "secure", "account", "wallet", "otp", "seed", "recovery",
+    "unlock", "restore", "confirm", "validate", "update-payment", "billing",
+    "deactivated", "suspended", "limited", "unusual-activity"
+  ]
+}
