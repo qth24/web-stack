@@ -1,7 +1,6 @@
-"""Network/handler layer for mini DNS module."""
+"""Network/handler layer for the mini DNS UDP+JSON module."""
 
 import argparse
-import json
 import socket
 import sys
 import time
@@ -10,21 +9,33 @@ from typing import Any, Dict, Optional, Tuple
 try:
     from . import config
     from .dns_cache import DNSCache
-    from .dns_resolver import (
-        StaticResolver,
-        is_valid_domain,
-        load_records_from_file,
-        normalize_domain,
+    from .dns_resolver import StaticResolver, load_records_from_file
+    from .protocol import (
+        STATUS_BAD_REQUEST,
+        STATUS_ERROR,
+        STATUS_NXDOMAIN,
+        STATUS_RATE_LIMITED,
+        ProtocolError,
+        build_error_response,
+        build_success_response,
+        decode_request,
+        encode_response,
     )
     from .rate_limiter import RateLimiter
 except ImportError:
     import config
     from dns_cache import DNSCache
-    from dns_resolver import (
-        StaticResolver,
-        is_valid_domain,
-        load_records_from_file,
-        normalize_domain,
+    from dns_resolver import StaticResolver, load_records_from_file
+    from protocol import (
+        STATUS_BAD_REQUEST,
+        STATUS_ERROR,
+        STATUS_NXDOMAIN,
+        STATUS_RATE_LIMITED,
+        ProtocolError,
+        build_error_response,
+        build_success_response,
+        decode_request,
+        encode_response,
     )
     from rate_limiter import RateLimiter
 
@@ -50,7 +61,7 @@ def log_event(tag: str, message: str, color_code: Optional[str] = None) -> None:
 
 
 class DNSRequestHandler:
-    """Parse request, consult cache/resolver, build JSON response."""
+    """Parse a UDP JSON request, then consult cache/resolver and build a response."""
 
     def __init__(
         self,
@@ -68,113 +79,66 @@ class DNSRequestHandler:
         if len(payload) > self.max_request_bytes:
             message = f"UDP packet too large (max {self.max_request_bytes} bytes)"
             log_event("ERROR", f"{client_addr} {message}", "31")
-            return {
-                "status": "BAD_REQUEST",
-                "domain": None,
-                "ip": None,
-                "message": message,
-            }
+            return build_error_response(STATUS_BAD_REQUEST, message)
 
-        # Rate limit check before parsing (avoids parse cost for limited clients).
+        try:
+            request = decode_request(payload)
+        except ProtocolError as exc:
+            log_event("ERROR", f"{client_addr} {exc}", "31")
+            return build_error_response(
+                exc.status,
+                str(exc),
+                request_id=exc.request_id,
+                domain=exc.domain,
+                qtype=exc.qtype,
+            )
+
         if self.rate_limiter is not None:
             client_ip = client_addr[0]
             if not self.rate_limiter.is_allowed(client_ip):
                 retry_after = self.rate_limiter.get_retry_after(client_ip)
                 log_event("RATE LIMIT", f"{client_ip} exceeded limit", "31")
-                return {
-                    "status": "RATE_LIMITED",
-                    "domain": None,
-                    "ip": None,
-                    "message": "Rate limit exceeded. Try again later.",
-                    "retry_after": retry_after,
-                }
-
-        request, error_message = self._parse_request(payload)
-        if error_message:
-            log_event("ERROR", f"{client_addr} {error_message}", "31")
-            return {
-                "status": "BAD_REQUEST",
-                "domain": None,
-                "ip": None,
-                "message": error_message,
-            }
-
-        raw_domain = request["domain"]
-        domain = normalize_domain(raw_domain)
-
-        if not is_valid_domain(domain):
-            message = "Invalid domain format"
-            log_event("ERROR", f"{client_addr} {message}: {raw_domain!r}", "31")
-            return {
-                "status": "BAD_REQUEST",
-                "domain": raw_domain,
-                "ip": None,
-                "message": message,
-            }
+                return build_error_response(
+                    STATUS_RATE_LIMITED,
+                    "Rate limit exceeded. Try again later.",
+                    request_id=request.request_id,
+                    domain=request.domain,
+                    qtype=request.qtype,
+                    retry_after=retry_after,
+                )
 
         now = time.time()
-        entry, cache_state = self.cache.get(domain, now)
+        entry, cache_state = self.cache.get(request.domain, now)
 
         if cache_state == "HIT":
             remaining = max(0.0, entry.expire_at - now) if entry else 0.0
-            log_event("CACHE HIT", f"{domain} -> {entry.ip} (remaining={remaining:.2f}s)", "32")
-            return self._ok_response(domain, entry.ip, entry.expire_at)
+            log_event(
+                "CACHE HIT",
+                f"{request.domain} -> {entry.ip} (remaining={remaining:.2f}s)",
+                "32",
+            )
+            return build_success_response(request, entry.ip, int(remaining))
 
         if cache_state == "EXPIRED":
-            log_event("CACHE EXPIRED", f"{domain} stale entry removed", "38;5;214")
+            log_event("CACHE EXPIRED", f"{request.domain} stale entry removed", "38;5;214")
 
-        log_event("CACHE MISS", f"{domain} not in cache", "33")
-        resolved = self.resolver.resolve(domain)
+        log_event("CACHE MISS", f"{request.domain} not in cache", "33")
+        resolved = self.resolver.resolve(request.domain)
 
         if resolved is None:
-            log_event("NXDOMAIN", f"{domain} not found", "31")
-            return {
-                "status": "NXDOMAIN",
-                "domain": domain,
-                "ip": None,
-                "message": "Domain not found",
-            }
+            log_event("NXDOMAIN", f"{request.domain} not found", "31")
+            return build_error_response(
+                STATUS_NXDOMAIN,
+                "Domain not found",
+                request_id=request.request_id,
+                domain=request.domain,
+                qtype=request.qtype,
+            )
 
         ip, ttl = resolved
-        new_entry = self.cache.set(domain, ip, ttl, now)
-        log_event("CACHE UPDATED", f"{domain} -> {ip} (ttl={ttl}s)", "34")
-        return self._ok_response(domain, ip, new_entry.expire_at)
-
-    @staticmethod
-    def _parse_request(payload: bytes) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        if not payload:
-            return None, "Empty UDP packet"
-
-        try:
-            text = payload.decode("utf-8", errors="strict")
-        except UnicodeDecodeError:
-            return None, "Request must be UTF-8 encoded JSON"
-
-        try:
-            data = json.loads(text)
-        except (json.JSONDecodeError, RecursionError, ValueError):
-            return None, "Invalid JSON payload"
-
-        if not isinstance(data, dict):
-            return None, "JSON root must be an object"
-
-        domain = data.get("domain")
-        if not isinstance(domain, str):
-            return None, "Missing or invalid 'domain' field"
-
-        if not domain.strip():
-            return None, "Domain cannot be empty"
-
-        return {"domain": domain}, None
-
-    @staticmethod
-    def _ok_response(domain: str, ip: str, expire_at: float) -> Dict[str, Any]:
-        return {
-            "status": "OK",
-            "domain": domain,
-            "ip": ip,
-            "expire_at": round(expire_at, 3),
-        }
+        self.cache.set(request.domain, ip, ttl, now)
+        log_event("CACHE UPDATED", f"{request.domain} -> {ip} (ttl={ttl}s)", "34")
+        return build_success_response(request, ip, ttl)
 
 
 class MiniDNSServer:
@@ -227,28 +191,18 @@ class MiniDNSServer:
                 response = self.handler.handle_packet(payload, client_addr)
             except Exception as exc:
                 log_event("ERROR", f"Unexpected handler error for {client_addr}: {exc}", "31")
-                response = {
-                    "status": "ERROR",
-                    "domain": None,
-                    "ip": None,
-                    "message": "Internal server error",
-                }
+                response = build_error_response(STATUS_ERROR, "Internal server error")
 
             try:
-                data = json.dumps(response, ensure_ascii=True).encode("utf-8")
+                data = encode_response(response)
                 if len(data) > self.max_response_bytes:
                     log_event(
                         "ERROR",
                         f"Response too large for {client_addr}; sending fallback error",
                         "31",
                     )
-                    fallback = {
-                        "status": "ERROR",
-                        "domain": None,
-                        "ip": None,
-                        "message": "Internal response too large",
-                    }
-                    data = json.dumps(fallback, ensure_ascii=True).encode("utf-8")
+                    fallback = build_error_response(STATUS_ERROR, "Internal response too large")
+                    data = encode_response(fallback)
                 self.socket.sendto(data, client_addr)
             except (OSError, TypeError, ValueError) as exc:
                 log_event("ERROR", f"Failed to send response to {client_addr}: {exc}", "31")

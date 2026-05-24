@@ -1,13 +1,14 @@
 """
 dns_client.py — Sends DNS queries to the DNS server via UDP.
-Simple protocol:
-  - Send: JSON {"domain": "example.local"}
-  - Receive: JSON {"status": "OK", "domain": "...", "ip": "...", "expire_at": ...}
+Protocol:
+  - Send: JSON {"version":"v1","id":"...","op":"resolve","domain":"example.local","qtype":"A"}
+  - Receive: JSON {"version":"v1","id":"...","status":"OK","domain":"...","qtype":"A","ip":"...","ttl":60}
 """
 
 import json
 import socket
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 
@@ -15,6 +16,15 @@ try:
     from .config import DNS_BUFFER, DNS_HOST, DNS_PORT, DNS_TIMEOUT, ENABLE_DNS_CACHE
 except ImportError:
     from config import DNS_BUFFER, DNS_HOST, DNS_PORT, DNS_TIMEOUT, ENABLE_DNS_CACHE
+
+try:
+    from dns.protocol import PROTOCOL_VERSION, QTYPE_A, RESOLVE_OPERATION, STATUS_NXDOMAIN, STATUS_OK
+except ImportError:
+    PROTOCOL_VERSION = "v1"
+    QTYPE_A = "A"
+    RESOLVE_OPERATION = "resolve"
+    STATUS_OK = "OK"
+    STATUS_NXDOMAIN = "NXDOMAIN"
 
 
 @dataclass
@@ -58,6 +68,8 @@ class DNSClient:
         Uses cache if available, otherwise sends UDP query.
         """
         domain = domain.strip().lower()
+        if domain.endswith("."):
+            domain = domain[:-1]
         if not domain:
             raise DNSError("Domain cannot be empty")
 
@@ -87,10 +99,18 @@ class DNSClient:
         """Sends JSON UDP packet and receives JSON response"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(self.timeout)
+        request_id = uuid.uuid4().hex
 
         try:
-            # Build and send JSON query
-            query_data = json.dumps({"domain": domain})
+            query_data = json.dumps(
+                {
+                    "version": PROTOCOL_VERSION,
+                    "id": request_id,
+                    "op": RESOLVE_OPERATION,
+                    "domain": domain,
+                    "qtype": QTYPE_A,
+                }
+            )
             sock.sendto(query_data.encode("utf-8"), (self.server_host, self.server_port))
 
             # Receive response
@@ -102,11 +122,22 @@ class DNSClient:
             except json.JSONDecodeError:
                 raise DNSError(f"DNS server returned malformed JSON: '{response_text}'")
 
+            if not isinstance(response_json, dict):
+                raise DNSError("DNS server returned a non-object JSON response")
+
+            version = response_json.get("version")
+            if version != PROTOCOL_VERSION:
+                raise DNSError(f"DNS server returned unsupported protocol version: {version!r}")
+
+            response_id = response_json.get("id")
+            if response_id != request_id:
+                raise DNSError("DNS server response id mismatch")
+
             # Check status
             status = response_json.get("status")
-            if status == "NXDOMAIN":
-                raise DNSError(f"Domain not found: '{domain}'")
-            elif status != "OK":
+            if status == STATUS_NXDOMAIN:
+                raise DNSError(response_json.get("message") or f"Domain not found: '{domain}'")
+            elif status != STATUS_OK:
                 msg = response_json.get("message", "Unknown error")
                 raise DNSError(f"DNS server error ({status}): {msg}")
 
@@ -114,12 +145,17 @@ class DNSClient:
             if not ip:
                 raise DNSError(f"DNS server response missing 'ip' field: {response_text}")
 
+            qtype = response_json.get("qtype")
+            if qtype != QTYPE_A:
+                raise DNSError(f"DNS server returned unexpected qtype: {qtype!r}")
+
             # Basic IP validation
             self._validate_ip(ip)
             resolved_domain = response_json.get("domain") or domain
-            expire_at = response_json.get("expire_at")
-            if not isinstance(expire_at, (int, float)):
-                expire_at = None
+            ttl = response_json.get("ttl")
+            if not isinstance(ttl, (int, float)):
+                raise DNSError(f"DNS server response missing 'ttl' field: {response_text}")
+            expire_at = time.time() + max(0, int(ttl))
             return DNSResult(domain=resolved_domain, ip=ip, expire_at=expire_at)
 
         except socket.timeout:

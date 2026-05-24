@@ -40,12 +40,12 @@ When the user enters `http://myweb.local/` in the browser:
      │
      ▼
 ┌─────────────────┐
-│  DNS Client     │  UDP JSON {"domain": "myweb.local"} → 127.0.0.1:5336
+│  DNS Client     │  UDP JSON v1 resolve query → 127.0.0.1:5336
 └────┬────────────┘
      │
      ▼
 ┌─────────────────┐
-│  DNS Server     │  resolves from dns_records.json → {"status":"OK","ip":"127.0.0.1"}
+│  DNS Server     │  resolves from dns_records.json → {"version":"v1","status":"OK","ip":"127.0.0.1","ttl":60}
 └────┬────────────┘
      │
      ▼
@@ -136,7 +136,7 @@ Environment variables override `.env` file values.
 ### DNS Resolution
 
 1. Enter `http://example.local/` in the browser.
-2. The browser sends a UDP JSON query to the DNS server.
+2. The browser sends a UDP JSON v1 query to the DNS server.
 3. DNS resolves from `dns_records.json` and returns `127.0.0.1`.
 4. The browser connects to the HTTP server and loads the page.
 
@@ -175,12 +175,12 @@ These scenarios demonstrate error handling in the stack:
 
 | Scenario | Command | Expected Result |
 |----------|---------|-----------------|
-| Unknown domain | DNS query `{"domain": "unknown.local"}` | `{"status": "NXDOMAIN"}` |
+| Unknown domain | DNS query `{"version":"v1","id":"req-1","op":"resolve","domain":"unknown.local","qtype":"A"}` | `{"version":"v1","status":"NXDOMAIN"}` |
 | Missing page | `curl http://127.0.0.1:8001/nonexistent` | `404 Not Found` |
 | Rate limit exceeded | 11+ rapid DNS queries from same IP | `{"status": "RATE_LIMITED"}` |
 | Wrong HTTP method | `curl -X POST http://127.0.0.1:8001/` | `405 Method Not Allowed` |
-| Invalid JSON | Send non-JSON UDP packet to DNS | `{"status": "BAD_REQUEST"}` |
-| Empty domain | DNS query `{"domain": ""}` | `{"status": "BAD_REQUEST"}` |
+| Invalid JSON | Send non-JSON UDP packet to DNS | `{"version":"v1","status":"BAD_REQUEST"}` |
+| Empty domain | DNS query `{"version":"v1","id":"req-1","op":"resolve","domain":"","qtype":"A"}` | `{"version":"v1","status":"BAD_REQUEST"}` |
 
 ## Project Structure
 
@@ -194,8 +194,10 @@ web-stack/
 │   ├── README.md
 │   ├── dns_server.py
 │   ├── dns_cache.py
+│   ├── protocol.py
 │   ├── dns_resolver.py
 │   ├── rate_limiter.py
+│   ├── test_dns.py
 │   └── dns_records.json
 ├── http-server/
 │   ├── README.md
@@ -211,6 +213,7 @@ web-stack/
 │       └── styles.css
 └── browser/
     ├── README.md
+    ├── test_dns_client.py
     ├── gui/
     │   └── browser_gui.py
     └── core/

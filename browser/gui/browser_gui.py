@@ -16,14 +16,15 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 try:
-    from PySide6.QtCore import Qt, QTimer, QUrl
-    from PySide6.QtGui import QAction, QIcon
+    from PySide6.QtCore import QSize, Qt, QTimer, QUrl
+    from PySide6.QtGui import QAction, QColor, QIcon
     try:
         from PySide6.QtWebEngineCore import QWebEnginePage
     except ImportError:
         QWebEnginePage = None
     from PySide6.QtWebEngineWidgets import QWebEngineView
     from PySide6.QtWidgets import (
+        QAbstractItemView,
         QApplication,
         QCheckBox,
         QDialog,
@@ -42,6 +43,7 @@ try:
         QMessageBox,
         QPushButton,
         QComboBox,
+        QSizePolicy,
         QStyle,
         QSpinBox,
         QSplitter,
@@ -253,27 +255,42 @@ class BrowserApp:
 
         self.toolbar = QToolBar("Navigation")
         self.toolbar.setMovable(False)
+        self.toolbar.setFloatable(False)
+        self.toolbar.setObjectName("browserToolbar")
+        self.toolbar.setIconSize(QSize(18, 18))
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.window.addToolBar(self.toolbar)
 
         style = QApplication.style()
-        self.back_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack), "", self.window)
-        self.forward_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), "", self.window)
-        self.reload_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "", self.window)
-        self.home_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_DirHomeIcon), "", self.window)
-        self.back_action.setToolTip("Back")
-        self.forward_action.setToolTip("Forward")
-        self.reload_action.setToolTip("Reload")
-        self.home_action.setToolTip("Home")
-        self.new_tab_action = QAction("+", self.window)
-        self.incognito_action = QAction("Incognito", self.window)
-        self.bookmark_action = QAction("Bookmark", self.window)
-        self.history_action = QAction("History", self.window)
-        self.bookmarks_action = QAction("Bookmarks", self.window)
+        self.back_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack), "Back", self.window)
+        self.forward_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), "Forward", self.window)
+        self.reload_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "Reload", self.window)
+        self.home_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_DirHomeIcon), "Home", self.window)
+        self.new_tab_action = QAction(
+            self._theme_icon("tab-new", QStyle.StandardPixmap.SP_FileDialogNewFolder),
+            "New Tab",
+            self.window,
+        )
+        self.incognito_action = QAction(self._theme_icon("view-private"), "New Private Tab", self.window)
+        self.bookmark_action = QAction(self._theme_icon("bookmark-new"), "Add Bookmark", self.window)
+        self.history_action = QAction(self._theme_icon("document-open-recent"), "History", self.window)
+        self.bookmarks_action = QAction(self._theme_icon("bookmarks"), "Bookmarks", self.window)
         self.add_shortcut_action = QAction("Add Shortcut", self.window)
-        self.print_action = QAction("Print", self.window)
-        self.download_action = QAction("Download", self.window)
-        self.devtools_action = QAction("DevTools", self.window)
+        self.print_action = QAction(self._theme_icon("document-print"), "Print", self.window)
+        self.download_action = QAction(self._theme_icon("download"), "Download", self.window)
+        self.devtools_action = QAction(self._theme_icon("applications-development"), "DevTools", self.window)
         self.settings_action = QAction("Settings", self.window)
+        self.go_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), "Go", self.window)
+
+        for action, tip in [
+            (self.back_action, "Back"),
+            (self.forward_action, "Forward"),
+            (self.reload_action, "Reload"),
+            (self.home_action, "Home"),
+            (self.new_tab_action, "Open a new tab"),
+            (self.go_action, "Open address"),
+        ]:
+            action.setToolTip(tip)
 
         for action in [
             self.back_action,
@@ -285,55 +302,69 @@ class BrowserApp:
             self.toolbar.addAction(action)
 
         self.url_input = QLineEdit()
+        self.url_input.setObjectName("urlInput")
         self.url_input.setClearButtonEnabled(True)
         self.url_input.setPlaceholderText("Search or enter address")
+        self.url_input.setMinimumWidth(420)
+        self.url_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.toolbar.addWidget(self.url_input)
 
-        self.go_action = QAction("Go", self.window)
         self.toolbar.addAction(self.go_action)
 
-        self.menu_button = QPushButton("Menu")
+        self.menu_button = QPushButton("≡")
+        self.menu_button.setObjectName("menuButton")
+        self.menu_button.setToolTip("Open menu")
+        self.menu_button.setFixedSize(40, 36)
         self.menu = QMenu(self.menu_button)
         self.menu.addAction(self.new_tab_action)
         self.menu.addAction(self.incognito_action)
         self.menu.addSeparator()
-        self.menu.addAction(self.history_action)
-        self.menu.addAction(self.bookmarks_action)
         self.menu.addAction(self.bookmark_action)
         self.menu.addAction(self.add_shortcut_action)
         self.menu.addSeparator()
-        self.menu.addAction(self.print_action)
-        self.menu.addAction(self.download_action)
-        self.menu.addAction(self.devtools_action)
+        self.menu.addAction(self.bookmarks_action)
+        self.menu.addAction(self.history_action)
         self.menu.addSeparator()
+        self.menu.addAction(self.download_action)
+        self.menu.addAction(self.print_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.devtools_action)
         self.menu.addAction(self.settings_action)
         self.menu_button.setMenu(self.menu)
         self.toolbar.addWidget(self.menu_button)
 
         main_splitter = QSplitter(Qt.Orientation.Vertical)
+        main_splitter.setHandleWidth(10)
         root.addWidget(main_splitter, 1)
+        self.tabs.setObjectName("mainTabs")
         main_splitter.addWidget(self.tabs)
 
         self.devtools_frame = QFrame()
+        self.devtools_frame.setObjectName("devtoolsFrame")
         devtools_layout = QVBoxLayout(self.devtools_frame)
-        devtools_layout.setContentsMargins(6, 6, 6, 6)
+        devtools_layout.setContentsMargins(10, 10, 10, 10)
+        devtools_layout.setSpacing(10)
         devtools_header = QHBoxLayout()
-        dt_label = QLabel("DevTools")
-        dt_label.setStyleSheet("font-weight:600;font-size:13px;letter-spacing:.04em;text-transform:uppercase;")
+        dt_label = QLabel("Developer Tools")
+        dt_label.setObjectName("devtoolsLabel")
         devtools_header.addWidget(dt_label)
         devtools_header.addStretch(1)
-        self.close_devtools_btn = QPushButton("✕")
+        self.close_devtools_btn = QPushButton("×")
+        self.close_devtools_btn.setObjectName("devtoolsCloseButton")
         self.close_devtools_btn.setFixedWidth(34)
-        self.close_devtools_btn.setStyleSheet("border-radius:4px;")
         devtools_header.addWidget(self.close_devtools_btn)
         devtools_layout.addLayout(devtools_header)
         self.devtools_tabs = QTabWidget()
+        self.devtools_tabs.setObjectName("devtoolsTabs")
         devtools_layout.addWidget(self.devtools_tabs)
 
         self.network_table = QTableWidget(0, 9)
         self.network_table.setHorizontalHeaderLabels(
             ["URL", "DNS IP", "DNS Cache", "TTL", "Endpoint", "Status", "HTTP Cache", "Time", "Error"]
         )
+        self.network_table.setAlternatingRowColors(True)
+        self.network_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.network_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.network_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.devtools_tabs.addTab(self.network_table, "Network")
 
@@ -343,6 +374,9 @@ class BrowserApp:
 
         self.cookies_table = QTableWidget(0, 3)
         self.cookies_table.setHorizontalHeaderLabels(["Domain", "Name", "Value"])
+        self.cookies_table.setAlternatingRowColors(True)
+        self.cookies_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.cookies_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.cookies_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.devtools_tabs.addTab(self.cookies_table, "Cookies")
 
@@ -355,9 +389,11 @@ class BrowserApp:
         self.devtools_tabs.addTab(self.console_text, "Console")
 
         self.history_list = QListWidget()
+        self.history_list.setUniformItemSizes(True)
         self.devtools_tabs.addTab(self.history_list, "History")
 
         self.bookmark_list = QListWidget()
+        self.bookmark_list.setUniformItemSizes(True)
         self.devtools_tabs.addTab(self.bookmark_list, "Bookmarks")
 
         main_splitter.addWidget(self.devtools_frame)
@@ -368,6 +404,18 @@ class BrowserApp:
         self.window.setStatusBar(self.status_bar)
         self._refresh_side_lists()
         self._set_status("Ready.")
+
+    def _theme_icon(
+        self,
+        theme_name: str,
+        fallback: Optional[QStyle.StandardPixmap] = None,
+    ) -> QIcon:
+        icon = QIcon.fromTheme(theme_name)
+        if not icon.isNull():
+            return icon
+        if fallback is not None:
+            return QApplication.style().standardIcon(fallback)
+        return QIcon()
 
     def _bind_actions(self):
         self.url_input.returnPressed.connect(self._on_go)
@@ -397,18 +445,66 @@ class BrowserApp:
         dark = self.settings.theme == "dark"
         if dark:
             return {
-                "window": "#0f172a", "bar": "#1e293b", "panel": "#1e293b", "panel2": "#334155",
-                "text": "#f1f5f9", "muted": "#94a3b8", "border": "#475569", "border2": "#334155",
-                "tab": "#334155", "tab_selected": "#0f172a", "input": "#0f172a",
-                "accent": "#3b82f6", "accent_hover": "#2563eb",
+                "window": "#0b1120",
+                "window_alt": "#111a2f",
+                "bar": "#182134",
+                "bar_top": "#202c45",
+                "bar_bottom": "#141d2f",
+                "panel": "#152238",
+                "panel2": "#1d2c45",
+                "panel3": "#273650",
+                "text": "#edf4ff",
+                "muted": "#9eb1ca",
+                "muted_soft": "#6e829f",
+                "border": "#31425f",
+                "border2": "#24344e",
+                "tab": "#1d2940",
+                "tab_hover": "#24344f",
+                "tab_selected": "#111a2d",
+                "tab_line": "#7aa2ff",
+                "input": "#0f1a2d",
+                "input_focus": "#13203a",
+                "accent": "#6ea8ff",
+                "accent_hover": "#8ab8ff",
+                "accent_soft": "rgba(110, 168, 255, 0.18)",
+                "accent_ring": "rgba(110, 168, 255, 0.34)",
+                "shadow": "rgba(2, 6, 23, 0.38)",
+                "shadow_soft": "rgba(2, 6, 23, 0.18)",
+                "hero_1": "rgba(66, 153, 225, 0.28)",
+                "hero_2": "rgba(20, 184, 166, 0.18)",
+                "hero_3": "rgba(124, 58, 237, 0.18)",
                 "error": "#ef4444", "warning": "#f59e0b", "success": "#22c55e",
                 "incognito": "#8b5cf6",
             }
         return {
-            "window": "#f8fafc", "bar": "#e8edf3", "panel": "#ffffff", "panel2": "#f9fafb",
-            "text": "#0f172a", "muted": "#64748b", "border": "#cbd5e1", "border2": "#e2e8f0",
-            "tab": "#e2e8f0", "tab_selected": "#ffffff", "input": "#ffffff",
-            "accent": "#2563eb", "accent_hover": "#1d4ed8",
+            "window": "#f3f6fb",
+            "window_alt": "#eef2f8",
+            "bar": "#edf2f8",
+            "bar_top": "#f7f9fc",
+            "bar_bottom": "#e6ecf4",
+            "panel": "#ffffff",
+            "panel2": "#f2f5fa",
+            "panel3": "#e7edf5",
+            "text": "#11203a",
+            "muted": "#63748a",
+            "muted_soft": "#8a98ad",
+            "border": "#d5dde8",
+            "border2": "#e7edf5",
+            "tab": "#e7edf4",
+            "tab_hover": "#f1f5fa",
+            "tab_selected": "#ffffff",
+            "tab_line": "#4f7fff",
+            "input": "#ffffff",
+            "input_focus": "#fefeff",
+            "accent": "#2563eb",
+            "accent_hover": "#1d4ed8",
+            "accent_soft": "rgba(37, 99, 235, 0.1)",
+            "accent_ring": "rgba(37, 99, 235, 0.18)",
+            "shadow": "rgba(15, 23, 42, 0.12)",
+            "shadow_soft": "rgba(15, 23, 42, 0.06)",
+            "hero_1": "rgba(103, 161, 255, 0.18)",
+            "hero_2": "rgba(255, 179, 71, 0.16)",
+            "hero_3": "rgba(45, 212, 191, 0.16)",
             "error": "#ef4444", "warning": "#f97316", "success": "#22c55e",
             "incognito": "#8b5cf6",
         }
@@ -417,102 +513,192 @@ class BrowserApp:
         c = self._theme_colors()
         self.window.setStyleSheet(
             f"""
-            QMainWindow {{ background: {c['window']}; color: {c['text']}; }}
-            QToolBar {{
-                background: {c['bar']};
+            QMainWindow {{
+                background: {c['window']};
+                color: {c['text']};
+            }}
+            QToolBar#browserToolbar {{
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {c['bar_top']},
+                    stop:1 {c['bar_bottom']}
+                );
+                border: 0;
                 border-bottom: 1px solid {c['border']};
-                spacing: 4px;
-                padding: 4px 8px;
+                spacing: 6px;
+                padding: 10px 12px 12px 12px;
             }}
             QToolButton {{
                 color: {c['text']};
                 background: transparent;
                 border: 1px solid transparent;
-                border-radius: 6px;
-                padding: 5px 7px;
+                border-radius: 17px;
+                padding: 8px;
+                min-width: 18px;
+                min-height: 18px;
+                margin: 0 1px;
             }}
-            QToolButton:hover {{ border-color: {c['border']}; background: {c['panel2']}; }}
-            QToolButton:pressed {{ background: {c['tab']}; }}
+            QToolButton:hover {{
+                background: {c['panel']};
+                border-color: {c['border']};
+            }}
+            QToolButton:pressed {{
+                background: {c['tab']};
+                border-color: {c['border']};
+            }}
+            QToolButton:disabled {{
+                color: {c['muted_soft']};
+                background: transparent;
+            }}
             QPushButton {{
                 color: {c['text']};
                 background: {c['panel2']};
                 border: 1px solid {c['border']};
-                border-radius: 6px;
-                padding: 5px 10px;
+                border-radius: 12px;
+                padding: 7px 12px;
             }}
-            QPushButton:hover {{ border-color: {c['accent']}; }}
+            QPushButton:hover {{
+                background: {c['panel']};
+                border-color: {c['accent']};
+            }}
             QPushButton::menu-indicator {{ image: none; width: 0; }}
-            QLineEdit {{
+            QPushButton#menuButton {{
+                background: {c['panel']};
+                border-radius: 18px;
+                font-size: 18px;
+                font-weight: 600;
+                padding: 0;
+            }}
+            QPushButton#menuButton:hover {{
+                background: {c['accent_soft']};
+                border-color: {c['accent']};
+            }}
+            QPushButton#devtoolsCloseButton {{
+                border-radius: 12px;
+                min-height: 28px;
+                font-size: 16px;
+                padding: 0;
+            }}
+            QLabel#devtoolsLabel {{
+                font-size: 12px;
+                font-weight: 700;
+                letter-spacing: 0.14em;
+                text-transform: uppercase;
+                color: {c['muted']};
+            }}
+            QLineEdit#urlInput {{
                 color: {c['text']};
                 background: {c['input']};
                 border: 1px solid {c['border']};
-                border-radius: 16px;
-                padding: 7px 14px;
+                border-radius: 20px;
+                padding: 9px 18px;
                 font-size: 15px;
                 selection-background-color: {c['accent']};
             }}
-            QLineEdit:focus {{ border: 2px solid {c['accent']}; padding: 6px 13px; }}
+            QLineEdit#urlInput:focus {{
+                background: {c['input_focus']};
+                border: 2px solid {c['tab_line']};
+                padding: 8px 17px;
+            }}
             QTabWidget::pane {{
-                border-top: 1px solid {c['border']};
+                border-top: 1px solid {c['border2']};
                 background: {c['panel']};
+            }}
+            QTabWidget#mainTabs::pane {{
+                background: {c['panel']};
+                border-top: 0;
             }}
             QTabBar::tab {{
                 color: {c['muted']};
                 background: {c['tab']};
-                border: 1px solid {c['border']};
+                border: 1px solid transparent;
                 border-bottom: 0;
-                padding: 7px 12px;
-                margin-right: 2px;
-                min-width: 80px;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
+                padding: 10px 16px 11px 16px;
+                margin: 8px 4px 0 0;
+                min-width: 120px;
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
             }}
-            QTabBar::tab:hover {{ color: {c['text']}; }}
+            QTabBar::tab:hover {{
+                color: {c['text']};
+                background: {c['tab_hover']};
+                border-color: {c['border2']};
+            }}
             QTabBar::tab:selected {{
                 color: {c['text']};
                 background: {c['tab_selected']};
                 border-color: {c['border']};
+                border-bottom-color: {c['tab_selected']};
+            }}
+            QTabBar::close-button {{
+                subcontrol-position: right;
+                margin-left: 10px;
+                width: 16px;
             }}
             QFrame {{
                 background: {c['panel']};
                 border: 1px solid {c['border']};
+                border-radius: 18px;
+            }}
+            QFrame#devtoolsFrame {{
+                background: {c['panel']};
+                border-top: 1px solid {c['border']};
+                border-radius: 0;
             }}
             QTableWidget, QListWidget, QTextEdit {{
                 color: {c['text']};
                 background: {c['panel']};
                 border: 1px solid {c['border']};
+                alternate-background-color: {c['panel2']};
                 gridline-color: {c['border2']};
                 selection-background-color: {c['accent']};
+                border-radius: 14px;
+            }}
+            QAbstractItemView::item {{
+                padding: 6px 8px;
+                border: 0;
             }}
             QHeaderView::section {{
                 color: {c['text']};
-                background: {c['bar']};
+                background: {c['panel2']};
                 border: 0;
                 border-right: 1px solid {c['border']};
                 border-bottom: 1px solid {c['border']};
-                padding: 5px;
+                padding: 8px;
+                font-weight: 600;
             }}
             QComboBox, QSpinBox {{
                 color: {c['text']};
                 background: {c['input']};
                 border: 1px solid {c['border']};
-                border-radius: 6px;
-                padding: 5px 8px;
+                border-radius: 10px;
+                padding: 7px 10px;
             }}
             QMenu {{
                 color: {c['text']};
                 background: {c['panel']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
-                padding: 4px 0;
+                border-radius: 14px;
+                padding: 8px 0;
             }}
-            QMenu::item {{ padding: 7px 22px; border-radius: 4px; margin: 2px 4px; }}
-            QMenu::item:selected {{ background: {c['accent']}; color: white; }}
+            QMenu::item {{
+                padding: 8px 22px;
+                border-radius: 8px;
+                margin: 2px 8px;
+            }}
+            QMenu::item:selected {{
+                background: {c['accent_soft']};
+                color: {c['text']};
+            }}
             QMenu::separator {{ height: 1px; background: {c['border']}; margin: 4px 0; }}
+            QSplitter::handle {{
+                background: {c['window_alt']};
+            }}
             QStatusBar {{
                 color: {c['muted']};
                 background: {c['bar']};
                 border-top: 1px solid {c['border']};
+                padding: 2px 12px;
             }}
             """
         )
@@ -860,46 +1046,105 @@ class BrowserApp:
 
         return html_body
 
+    def _page_header(
+        self,
+        eyebrow: str,
+        title: str,
+        lead: str,
+        chips: Optional[list[str]] = None,
+    ) -> str:
+        chip_html = "".join(
+            f"<span class='chip'>{html.escape(chip)}</span>"
+            for chip in (chips or [])
+            if chip.strip()
+        )
+        return (
+            "<header class='page-hero'>"
+            "<div class='page-copy'>"
+            f"<p class='eyebrow'>{html.escape(eyebrow)}</p>"
+            f"<h1>{html.escape(title)}</h1>"
+            f"<p class='lead'>{html.escape(lead)}</p>"
+            "</div>"
+            f"<div class='page-chips'>{chip_html}</div>"
+            "</header>"
+        )
+
+    @staticmethod
+    def _display_host(url: str) -> str:
+        parsed = urlparse(url)
+        if parsed.netloc:
+            return parsed.netloc
+        return url.replace("http://", "").replace("https://", "").rstrip("/")
+
     def _render_new_tab(self, tab: BrowserTab):
         logo_path = Path(__file__).resolve().parents[2] / "logo.png"
         logo_src = self._image_data_uri(logo_path)
-        shortcuts = "".join(
-            "<div class='shortcut-wrap'><a class='shortcut' href='{url}'><span>{letter}</span><b>{label}</b></a>"
-            "<a class='shortcut-delete' href='internal:delete-shortcut?url={encoded}'>Delete</a></div>".format(
-                url=html.escape(self._shortcut_url(item)),
+        search_name = html.escape(self.settings.search_engine.title())
+        mode_chip = "Private session" if tab.incognito else "Saved history"
+        shortcut_cards = "".join(
+            (
+                "<article class='shortcut-card'>"
+                "<a class='shortcut-delete' href='internal:delete-shortcut?url={encoded}' aria-label='Delete shortcut'>×</a>"
+                "<a class='shortcut-link' href='{url}'>"
+                "<span class='shortcut-icon'>{letter}</span>"
+                "<div class='shortcut-copy'><strong>{label}</strong><small>{host}</small></div>"
+                "</a>"
+                "</article>"
+            ).format(
                 encoded=quote_plus(self._shortcut_url(item)),
+                url=html.escape(self._shortcut_url(item)),
                 letter=html.escape(self._shortcut_label(item)[:1].upper() or "W"),
                 label=html.escape(self._shortcut_label(item)),
+                host=html.escape(self._display_host(self._shortcut_url(item))),
             )
             for item in self.shortcuts[:10]
         )
         logo_img = f"<img src='{html.escape(logo_src)}'>" if logo_src else ""
-        brand_inner = f"{logo_img}<h1>WaterCat</h1>"
-        
         body = f"""
-        <main class="home">
-          <div class="brand">
-            {brand_inner}
-          </div>
-          <form class="home-search" action="internal:go" method="get">
-            <input name="q" autofocus placeholder="Search with {html.escape(self.settings.search_engine.title())} or enter address">
-          </form>
-          <section class="shortcuts">
-            {shortcuts}
-            <form class="shortcut-add" action="internal:add-shortcut" method="get">
-              <input name="name" placeholder="Name">
-              <input name="url" placeholder="URL">
-              <button type="submit">Add</button>
+        <main class="page-shell home-shell">
+          <section class="home-hero surface">
+            <div class="brand">
+              <div class="brand-mark">{logo_img}</div>
+              <div class="brand-copy">
+                <span class="brand-badge">WaterCat Browser</span>
+                <h1>Built for your custom stack.</h1>
+                <p>Fast local demos, custom DNS, raw HTTP, and a cleaner new tab experience inspired by modern browser chrome.</p>
+              </div>
+            </div>
+            <div class="page-chips hero-chips">
+              <span class="chip">{mode_chip}</span>
+              <span class="chip">Search: {search_name}</span>
+              <span class="chip">DNS {html.escape(self.settings.dns_host)}:{self.settings.dns_port}</span>
+            </div>
+            <form class="home-search" action="internal:go" method="get">
+              <div class="search-shell">
+                <span class="search-glyph">&#8981;</span>
+                <input name="q" autofocus placeholder="Search with {search_name} or enter address">
+                <button type="submit">Go</button>
+              </div>
             </form>
+          </section>
+          <section class="surface shortcuts-surface">
+            <div class="surface-head">
+              <div>
+                <p class="section-kicker">Quick access</p>
+                <h2>Top shortcuts</h2>
+              </div>
+              <p class="surface-note">Open local sites fast, then trim the list from each tile when you no longer need it.</p>
+            </div>
+            <div class="shortcut-grid">
+              {shortcut_cards}
+              <form class="shortcut-form" action="internal:add-shortcut" method="get">
+                <p class="section-kicker">Add shortcut</p>
+                <input name="name" placeholder="Label">
+                <input name="url" placeholder="https://example.local">
+                <button type="submit">Save shortcut</button>
+              </form>
+            </div>
           </section>
         </main>
         """
-        tab.view.setHtml(
-            self._page_html(
-                "WaterCat Browser",
-                body,
-            )
-        )
+        tab.view.setHtml(self._page_html("WaterCat Browser", body))
 
     def _render_search_page(self, tab: BrowserTab, url: str):
         query = ""
@@ -911,59 +1156,102 @@ class BrowserApp:
             if query.lower() in item.lower()
         ][:12]
         local_links = "".join(
-            f"<div class='card'><h3><a href='{html.escape(item)}'>{html.escape(item)}</a></h3></div>"
+            (
+                "<a class='list-card' href='{url}'>"
+                "<div class='list-copy'>"
+                "<span class='list-eyebrow'>Local match</span>"
+                "<strong>{url}</strong>"
+                "<p>{host}</p>"
+                "</div>"
+                "<span class='list-meta'>Open</span>"
+                "</a>"
+            ).format(
+                url=html.escape(item),
+                host=html.escape(self._display_host(item)),
+            )
             for item in matches
+        ) or (
+            "<div class='empty-state'>"
+            "<h3>No local matches yet</h3>"
+            "<p>Search results from your history and bookmarks will appear here once you have visited or saved them.</p>"
+            "</div>"
         )
-        if not local_links:
-            local_links = "<p class='muted' style='margin:16px 48px'>No local bookmark/history matches.</p>"
         engine_url = self._engine_search_url(query)
         engine_results = "".join(
-            f"<div class='result'><b>{html.escape(title)}</b><p>{html.escape(url)}</p></div>"
+            (
+                "<a class='result-card' href='{url}'>"
+                "<span class='list-eyebrow'>External result</span>"
+                "<strong>{title}</strong>"
+                "<p>{url}</p>"
+                "</a>"
+            ).format(
+                title=html.escape(title),
+                url=html.escape(url),
+            )
             for title, url in self._external_search_results(query)
         )
-        engine_name = html.escape(self.settings.search_engine.title())
+        engine_name = self.settings.search_engine.title()
         body = (
-            f"<div class='search-header'>"
-            f"<h1>Search results for &ldquo;{html.escape(query)}&rdquo;</h1>"
-            f"<span class='search-engine'>{engine_name}</span>"
-            f"</div>"
-            f"<div class='result'><b>{engine_name} results page</b>"
-            f"<p>{html.escape(engine_url)}</p></div>"
-            f"{engine_results}"
-            f"<h2 style='margin:24px 48px 12px'>Local matches</h2>"
-            f"{local_links}"
+            "<main class='page-shell'>"
+            + self._page_header(
+                "Search",
+                f"Search results for “{query or 'your query'}”",
+                "WaterCat surfaces external search suggestions alongside the pages you already visited or saved locally.",
+                [engine_name, f"{len(matches)} local matches"],
+            )
+            + "<section class='grid grid-2'>"
+            + "<div class='surface'>"
+            + "<div class='surface-head'>"
+            + "<div><p class='section-kicker'>Search engine</p><h2>Web results</h2></div>"
+            + f"<a class='ghost-link' href='{html.escape(engine_url)}'>Open {html.escape(engine_name)}</a>"
+            + "</div>"
+            + "<div class='result-stack'>"
+            + (
+                engine_results
+                or "<div class='empty-state'><h3>No remote results</h3><p>WaterCat fell back to local suggestions because the search engine page could not be fetched.</p></div>"
+            )
+            + "</div></div>"
+            + "<div class='surface'>"
+            + "<div class='surface-head'><div><p class='section-kicker'>Library</p><h2>Local matches</h2></div></div>"
+            + "<div class='list-stack'>"
+            + local_links
+            + "</div></div></section></main>"
         )
         tab.view.setHtml(self._page_html("Search", body))
 
     def _render_error(self, tab: BrowserTab, title: str, message: str, code: int = 500):
-        c = self._theme_colors()
         if code == 404 or "not found" in title.lower():
             icon = "&#128269;"
-            hint = "The page you're looking for doesn't exist. Check the URL or try navigating from the home page."
+            hint = "The page you're looking for doesn't exist. Check the address or jump back to the new tab page."
         elif "timeout" in title.lower() or code == 504:
             icon = "&#9203;"
-            hint = "The server took too long to respond. Check your network connection and try again."
+            hint = "The server took too long to respond. Verify the stack is running and try again."
         elif "rate" in title.lower() or code == 429:
             icon = "&#9888;&#65039;"
-            hint = "Too many requests. Wait a moment before trying again."
+            hint = "Too many requests hit the resolver. Wait briefly before retrying."
         elif "invalid" in title.lower() or "url" in title.lower():
             icon = "&#9888;&#65039;"
-            hint = "The URL format is invalid. Make sure it starts with http:// and includes a valid host."
+            hint = "The address format is invalid. Use http:// and include a valid host."
         elif "bad gateway" in title.lower() or code == 502:
             icon = "&#128268;"
-            hint = "The server returned an invalid response. The upstream service may be down."
+            hint = "The upstream response could not be parsed cleanly. Check the HTTP server output."
         else:
             icon = "&#128683;"
             hint = "Check the DNS record, server IP, port, or whether the HTTP server is running."
 
         body = (
-            "<section class='error-page'>"
+            "<main class='page-shell error-shell'>"
+            "<section class='surface error-card'>"
             f"<div class='error-icon'>{icon}</div>"
-            f"<div class='error-code'>{code}</div>"
+            f"<p class='eyebrow'>Error {code}</p>"
             f"<h1>{html.escape(title)}</h1>"
+            f"<p class='lead'>{html.escape(hint)}</p>"
             f"<pre>{html.escape(message)}</pre>"
-            f"<p class='error-hint'>{hint}</p>"
+            "<div class='action-row center'>"
+            "<a class='button-link' href='internal:home'>Back to New Tab</a>"
+            "</div>"
             "</section>"
+            "</main>"
         )
         tab.view.setHtml(self._page_html(title, body, error=True))
         tab.title = title
@@ -975,13 +1263,18 @@ class BrowserApp:
         content_type = html.escape(response.headers.get("Content-Type", "application/octet-stream"))
         size_str = f"{size:,}" if size >= 1000 else str(size)
         body = (
-            "<div class='download-page'>"
-            "<div class='download-card'>"
-            "<div class='download-icon'>&#128229;</div>"
-            "<h1>Download ready</h1>"
-            f"<p class='download-meta'>{size_str} bytes &middot; {content_type}</p>"
-            "<p class='muted'>Use Menu &gt; Download to save this response.</p>"
-            "</div></div>"
+            "<main class='page-shell'>"
+            + self._page_header(
+                "Response",
+                "Download ready",
+                "The response body is available to save locally from the browser menu.",
+                [content_type, f"{size_str} bytes"],
+            )
+            + "<section class='surface center-card'>"
+            + "<div class='download-icon'>&#128229;</div>"
+            + "<h2>Save the current response</h2>"
+            + "<p class='lead compact'>Use Menu > Download to write the fetched bytes to disk without leaving the current tab.</p>"
+            + "</section></main>"
         )
         tab.view.setHtml(self._page_html("Download ready", body))
 
@@ -993,40 +1286,45 @@ class BrowserApp:
         tab = self._current_tab()
         if not tab:
             return
-        body = f"""
-        <h1>Settings</h1>
-        <div class="settings-section">
-          <h2>Appearance</h2>
-          <div class="settings-card">
-            <form class="settings-form" action="internal:save-settings" method="get" style="margin:0;border:0;padding:0">
-              <label>Theme
-                <select name="theme">
-                  <option value="light" {'selected' if self.settings.theme == 'light' else ''}>Light</option>
-                  <option value="dark" {'selected' if self.settings.theme == 'dark' else ''}>Dark</option>
-                </select>
-              </label>
-              <label>Font size <input type="number" min="12" max="24" name="font_size" value="{self.settings.font_size}"></label>
-              <label>Search engine
-                <select name="search_engine">
-                  <option value="google" {'selected' if self.settings.search_engine == 'google' else ''}>Google</option>
-                  <option value="bing" {'selected' if self.settings.search_engine == 'bing' else ''}>Bing</option>
-                </select>
-              </label>
-              <button type="submit">Save Settings</button>
-            </form>
-          </div>
-        </div>
-        <div class="settings-section">
-          <h2>Connection</h2>
-          <div class="settings-readonly">
-            <p><b>DNS:</b> {html.escape(self.settings.dns_host)}:{self.settings.dns_port}</p>
-            <p><b>HTTP default port:</b> {self.settings.http_default_port}</p>
-            <p><b>Home:</b> {html.escape(self.settings.home_url)}</p>
-            <p><b>Search URL:</b> {html.escape(self.settings.search_url)}</p>
-            <p><b>DNS cache:</b> {'enabled' if self.settings.enable_dns_cache else 'disabled'}</p>
-          </div>
-        </div>
-        """
+        body = (
+            "<main class='page-shell'>"
+            + self._page_header(
+                "Preferences",
+                "Settings",
+                "Adjust the parts of WaterCat that matter day to day without touching the browser’s network configuration files.",
+                [
+                    f"Theme: {self.settings.theme.title()}",
+                    f"Search: {self.settings.search_engine.title()}",
+                    f"Font: {self.settings.font_size}px",
+                ],
+            )
+            + "<section class='grid grid-2'>"
+            + "<div class='surface'>"
+            + "<div class='surface-head'><div><p class='section-kicker'>Appearance</p><h2>Browser look and feel</h2></div></div>"
+            + "<form class='settings-form' action='internal:save-settings' method='get'>"
+            + "<label class='field'><span>Theme</span>"
+            + "<select name='theme'>"
+            + f"<option value='light' {'selected' if self.settings.theme == 'light' else ''}>Light</option>"
+            + f"<option value='dark' {'selected' if self.settings.theme == 'dark' else ''}>Dark</option>"
+            + "</select></label>"
+            + f"<label class='field'><span>Font size</span><input type='number' min='12' max='24' name='font_size' value='{self.settings.font_size}'></label>"
+            + "<label class='field'><span>Search engine</span>"
+            + "<select name='search_engine'>"
+            + f"<option value='google' {'selected' if self.settings.search_engine == 'google' else ''}>Google</option>"
+            + f"<option value='bing' {'selected' if self.settings.search_engine == 'bing' else ''}>Bing</option>"
+            + "</select></label>"
+            + "<div class='action-row'><button type='submit'>Save settings</button></div>"
+            + "</form></div>"
+            + "<div class='surface'>"
+            + "<div class='surface-head'><div><p class='section-kicker'>Connection</p><h2>Current runtime values</h2></div></div>"
+            + "<div class='kv-list'>"
+            + f"<div class='kv-row'><span>DNS server</span><b>{html.escape(self.settings.dns_host)}:{self.settings.dns_port}</b></div>"
+            + f"<div class='kv-row'><span>HTTP default port</span><b>{self.settings.http_default_port}</b></div>"
+            + f"<div class='kv-row'><span>Home route</span><b>{html.escape(self.settings.home_url)}</b></div>"
+            + f"<div class='kv-row'><span>Search route</span><b>{html.escape(self.settings.search_url)}</b></div>"
+            + f"<div class='kv-row'><span>DNS cache</span><b>{'Enabled' if self.settings.enable_dns_cache else 'Disabled'}</b></div>"
+            + "</div></div></section></main>"
+        )
         tab.view.setHtml(self._page_html("Settings", body))
         tab.title = "Settings"
         self._update_tab_label(tab)
@@ -1034,54 +1332,88 @@ class BrowserApp:
     def _page_html(self, title: str, body: str, error: bool = False) -> str:
         c = self._theme_colors()
         error_color = c["error"] if error else c["text"]
-        
-        # Determine background gradient based on theme
-        if self.settings.theme == "dark":
-            gradient = "linear-gradient(135deg, #1e1b4b 0%, #1e293b 50%, #0f172a 100%)"
-            card_bg = "rgba(51, 65, 85, 0.6)"
-            card_hover = "rgba(71, 85, 105, 0.8)"
-            shortcut_inner_bg = "rgba(30, 41, 59, 0.8)"
-        else:
-            gradient = "linear-gradient(135deg, #eef2ff 0%, #f1f5f9 50%, #f8fafc 100%)"
-            card_bg = "rgba(226, 232, 240, 0.6)"
-            card_hover = "rgba(203, 213, 225, 0.8)"
-            shortcut_inner_bg = "rgba(255, 255, 255, 0.8)"
-
         return (
             "<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width, initial-scale=1'>"
             f"<title>{html.escape(title)}</title>"
-            f"<style>body{{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;color:{c['text']};background:{c['window']};font-size:{self.settings.font_size}px}}"
-            "body>h1,body>p,body>h2,body>ul,body>pre,body>.result{margin-left:48px;margin-right:48px}"
-            "body>h1{margin-top:48px}"
-            f"h1{{color:{error_color}}}pre{{white-space:pre-wrap;background:{c['panel2']};border:1px solid {c['border']};padding:16px;border-radius:8px}}"
-            f"a{{color:{c['accent']};text-decoration:none}}a:hover{{color:{c['accent_hover']};text-decoration:underline}}"
-            f".home{{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:36px;padding-bottom:80px;background:{gradient};}}"
-            ".brand{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:16px}.brand img{height:64px;width:auto;object-fit:contain}.brand h1{font-size:48px;margin:0;font-weight:700;letter-spacing:-0.02em}"
-            f".home-search{{width:min(720px,75vw);background:{c['panel']};border:1px solid {c['border']};box-shadow:0 10px 30px rgba(0,0,0,0.1);border-radius:12px;padding:4px;transition:box-shadow .2s, border-color .2s}}"
-            f".home-search:focus-within{{border-color:{c['accent']};box-shadow:0 10px 40px rgba(0,0,0,0.15)}}"
-            f".home-search input{{width:100%;box-sizing:border-box;border:0;outline:0;background:transparent;color:{c['text']};font-size:18px;padding:14px 16px}}"
-            ".shortcuts{display:flex;gap:20px;flex-wrap:wrap;justify-content:center;max-width:960px;margin-top:12px}"
-            ".shortcut-wrap{position:relative;width:112px;text-align:center}"
-            f".shortcut{{display:flex;flex-direction:column;align-items:center;gap:12px;text-decoration:none;color:{c['text']};padding:12px;border-radius:12px;background:{card_bg};transition:background .15s, transform .15s}}"
-            f".shortcut:hover{{background:{card_hover};transform:translateY(-2px)}}"
-            f".shortcut span{{display:grid;place-items:center;width:48px;height:48px;background:{shortcut_inner_bg};border:1px solid {c['border']};border-radius:10px;font-size:22px;font-weight:600}}"
-            f".shortcut b{{font-size:13px;font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}}"
-            f".shortcut-delete{{position:absolute;top:-4px;right:-4px;width:24px;height:24px;background:{c['error']};color:white;border-radius:50%;display:none;align-items:center;justify-content:center;font-size:10px;text-decoration:none;z-index:10;box-shadow:0 2px 6px rgba(0,0,0,0.2)}}"
-            ".shortcut-wrap:hover .shortcut-delete{display:flex}"
-            f".shortcut-add{{width:200px;background:{card_bg};border:1px solid {c['border']};border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px}}"
-            f".shortcut-add input,.settings-form input,.settings-form select{{background:{c['input']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:8px;font-size:14px}}"
-            f".shortcut-add input:focus,.settings-form input:focus,.settings-form select:focus{{border-color:{c['accent']};outline:none}}.shortcut-add button,.settings-form button{{background:{c['accent']};color:white;border:0;border-radius:8px;padding:9px;font-size:14px;cursor:pointer;transition:background .12s}}.shortcut-add button:hover,.settings-form button:hover{{background:{c['accent_hover']}}}"
-            f".settings-section{{margin:24px 48px;max-width:760px}}.settings-section h2{{color:{c['muted']};font-size:13px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px}}"
-            f".settings-card{{background:{c['panel']};border:1px solid {c['border']};border-radius:12px;padding:18px;margin-bottom:16px}}"
-            f".settings-form{{margin:24px 48px;background:{c['panel']};border:1px solid {c['border']};border-radius:12px;padding:18px;max-width:760px;display:flex;flex-direction:column;gap:14px}}.settings-form label{{display:flex;justify-content:space-between;gap:18px;align-items:center}}"
-            f".settings-readonly{{margin:24px 48px;background:{c['panel2']};border:1px solid {c['border']};border-radius:12px;padding:18px;max-width:760px;display:flex;flex-direction:column;gap:10px}}"
-            f".data-table{{margin:24px 48px;border-collapse:collapse;width:calc(100% - 96px);background:{c['panel']};border:1px solid {c['border']};border-radius:12px;overflow:hidden}}.data-table th,.data-table td{{border-bottom:1px solid {c['border2']};padding:12px;text-align:left}}.data-table th{{color:{c['muted']};font-size:13px;text-transform:uppercase;letter-spacing:.04em;background:{c['panel2']}}}.data-table tbody tr:nth-child(even){{background:{c['panel2']}}}.data-table tbody tr:hover{{background:{c['border2']}}}"
-            f".muted{{color:{c['muted']}}}.result{{background:{c['panel']};border:1px solid {c['border']};border-radius:10px;padding:16px;margin:16px 48px}}"
-            f".error-page{{margin:64px 48px;max-width:700px;text-align:center}}.error-icon{{font-size:64px;margin-bottom:16px}}.error-code{{font-size:72px;font-weight:800;color:{error_color};line-height:1}}.error-hint{{color:{c['muted']};margin-top:16px;font-size:15px}}"
-            f".card{{background:{c['panel']};border:1px solid {c['border']};border-radius:12px;padding:16px;margin:12px 48px;transition:border-color .12s}}.card:hover{{border-color:{c['accent']}}}"
-            f".card h3{{margin:0 0 6px;font-size:15px}}.card p{{margin:0;color:{c['muted']};font-size:13px}}"
-            f".download-page{{margin:48px;max-width:600px}}.download-card{{background:{c['panel']};border:1px solid {c['border']};border-radius:12px;padding:24px;text-align:center}}.download-icon{{font-size:48px;margin-bottom:12px}}.download-meta{{color:{c['muted']};font-size:14px;margin:8px 0}}"
-            f".search-header{{margin:32px 48px 16px}}.search-header h1{{margin:0}}.search-engine{{display:inline-block;background:{c['panel2']};border:1px solid {c['border']};border-radius:20px;padding:4px 14px;font-size:13px;color:{c['muted']};margin-top:8px}}"
+            f"<style>:root{{--bg:{c['window']};--bg-alt:{c['window_alt']};--panel:{c['panel']};--panel-alt:{c['panel2']};--panel-soft:{c['panel3']};--text:{c['text']};--muted:{c['muted']};--muted-soft:{c['muted_soft']};--border:{c['border']};--border-soft:{c['border2']};--accent:{c['accent']};--accent-hover:{c['accent_hover']};--accent-soft:{c['accent_soft']};--accent-ring:{c['accent_ring']};--shadow:{c['shadow']};--shadow-soft:{c['shadow_soft']};--hero-1:{c['hero_1']};--hero-2:{c['hero_2']};--hero-3:{c['hero_3']};}}"
+            "*{box-sizing:border-box}"
+            f"body{{margin:0;min-height:100vh;font-family:'Segoe UI Variable Text','Aptos','Segoe UI','Inter',sans-serif;color:var(--text);background:radial-gradient(circle at 12% 15%, var(--hero-1), transparent 24%),radial-gradient(circle at 88% 18%, var(--hero-2), transparent 22%),radial-gradient(circle at 58% 82%, var(--hero-3), transparent 25%),linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 46%, var(--bg) 100%);font-size:{self.settings.font_size}px;line-height:1.5}}"
+            "a{color:var(--accent);text-decoration:none}"
+            "a:hover{color:var(--accent-hover)}"
+            "h1,h2,h3,p{margin:0}"
+            f"h1{{color:{error_color}}}"
+            "pre{white-space:pre-wrap;background:var(--panel-alt);border:1px solid var(--border);padding:18px 20px;border-radius:18px;overflow:auto;text-align:left}"
+            "input,select,button{font:inherit}"
+            "input,select{width:100%;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:12px 14px;outline:none;transition:border-color .18s,box-shadow .18s}"
+            "input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-ring)}"
+            "button,.button-link{display:inline-flex;align-items:center;justify-content:center;gap:8px;background:var(--accent);color:white;border:0;border-radius:14px;padding:12px 18px;font-weight:600;cursor:pointer;transition:transform .18s,background .18s;box-shadow:0 10px 20px var(--shadow-soft)}"
+            "button:hover,.button-link:hover{background:var(--accent-hover);color:white;transform:translateY(-1px)}"
+            ".ghost-link{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:999px;padding:9px 14px;background:var(--panel-alt);color:var(--text)}"
+            ".ghost-link:hover{border-color:var(--accent);color:var(--accent)}"
+            ".page-shell{max-width:1180px;margin:0 auto;padding:36px 30px 56px}"
+            ".home-shell{display:flex;flex-direction:column;justify-content:center;min-height:100vh}"
+            ".page-hero{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin-bottom:24px}"
+            ".page-copy{max-width:720px}"
+            ".eyebrow,.section-kicker,.list-eyebrow,.brand-badge{font-size:12px;line-height:1.2;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-weight:700}"
+            "h1{font-size:clamp(36px,5vw,54px);letter-spacing:-.045em}"
+            "h2{font-size:26px;letter-spacing:-.03em}"
+            ".lead{margin-top:12px;color:var(--muted);font-size:18px;max-width:660px}"
+            ".lead.compact{max-width:560px;margin:12px auto 0}"
+            ".page-chips{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;align-self:flex-start}"
+            ".chip{display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border-radius:999px;background:var(--panel-alt);border:1px solid var(--border);color:var(--muted);font-size:13px}"
+            ".surface{background:linear-gradient(180deg, var(--panel) 0%, var(--panel-alt) 100%);border:1px solid var(--border);border-radius:28px;padding:24px;box-shadow:0 18px 40px var(--shadow-soft)}"
+            ".surface-head{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;margin-bottom:18px}"
+            ".surface-note{max-width:320px;color:var(--muted);font-size:14px;text-align:right}"
+            ".grid{display:grid;gap:20px}"
+            ".grid-2{grid-template-columns:minmax(0,1.35fr) minmax(280px,.95fr)}"
+            ".brand{display:flex;justify-content:flex-start;gap:28px;align-items:flex-start;flex-wrap:wrap}"
+            ".brand-mark{width:92px;height:92px;border-radius:26px;background:rgba(255,255,255,.2);border:1px solid var(--border);display:grid;place-items:center;backdrop-filter:blur(12px);box-shadow:0 16px 36px var(--shadow-soft)}"
+            ".brand-mark img{width:78px;height:78px;object-fit:contain}"
+            ".brand-copy{max-width:700px}"
+            ".brand-copy h1{margin-top:10px}"
+            ".brand-copy p{margin-top:12px;color:var(--muted);font-size:18px;max-width:620px}"
+            ".hero-chips{margin-top:6px}"
+            ".home-hero{position:relative;overflow:hidden;padding:30px 30px 26px}"
+            ".home-search{margin-top:28px}"
+            ".search-shell{display:flex;align-items:center;gap:12px;padding:8px;background:rgba(255,255,255,.3);border:1px solid var(--border);border-radius:26px;backdrop-filter:blur(12px)}"
+            ".search-glyph{display:grid;place-items:center;width:42px;height:42px;border-radius:18px;background:var(--panel);border:1px solid var(--border);color:var(--accent);font-size:18px;flex:0 0 auto}"
+            ".search-shell input{flex:1;border:0;background:transparent;box-shadow:none;padding:10px 4px;font-size:18px}"
+            ".search-shell input:focus{box-shadow:none}"
+            ".search-shell button{border-radius:18px;padding:12px 18px;min-width:90px}"
+            ".shortcut-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px}"
+            ".shortcut-card,.shortcut-form{position:relative;min-height:176px;border:1px solid var(--border);border-radius:22px;background:rgba(255,255,255,.35);backdrop-filter:blur(14px)}"
+            ".shortcut-link{display:flex;flex-direction:column;gap:18px;min-height:176px;padding:20px 18px;color:var(--text)}"
+            ".shortcut-link:hover{color:var(--text)}"
+            ".shortcut-icon{display:grid;place-items:center;width:56px;height:56px;border-radius:18px;background:var(--panel);border:1px solid var(--border);font-size:24px;font-weight:700;color:var(--accent);box-shadow:0 10px 18px var(--shadow-soft)}"
+            ".shortcut-copy{display:flex;flex-direction:column;gap:8px}"
+            ".shortcut-copy strong{font-size:16px;letter-spacing:-.02em}"
+            ".shortcut-copy small{color:var(--muted);font-size:13px;overflow-wrap:anywhere}"
+            ".shortcut-delete{position:absolute;top:12px;right:12px;display:grid;place-items:center;width:28px;height:28px;border-radius:999px;background:rgba(239,68,68,.14);border:1px solid rgba(239,68,68,.24);color:var(--error);font-weight:700}"
+            ".shortcut-delete:hover{background:rgba(239,68,68,.2);color:var(--error)}"
+            ".shortcut-form{display:flex;flex-direction:column;gap:12px;padding:18px;justify-content:center}"
+            ".settings-form{display:grid;gap:14px}"
+            ".field{display:grid;gap:8px;color:var(--muted);font-weight:600}"
+            ".action-row{display:flex;gap:12px;align-items:center;margin-top:8px;flex-wrap:wrap}"
+            ".action-row.center{justify-content:center}"
+            ".kv-list,.list-stack,.result-stack{display:grid;gap:12px}"
+            ".kv-row{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;padding:14px 0;border-bottom:1px solid var(--border-soft)}"
+            ".kv-row:last-child{border-bottom:0;padding-bottom:0}"
+            ".kv-row span{color:var(--muted)}"
+            ".kv-row b{font-weight:600;text-align:right;overflow-wrap:anywhere}"
+            ".list-card,.result-card{display:flex;justify-content:space-between;gap:18px;padding:18px 20px;border:1px solid var(--border);border-radius:20px;background:var(--panel);box-shadow:0 10px 20px var(--shadow-soft);color:var(--text);transition:border-color .18s,transform .18s}"
+            ".list-card:hover,.result-card:hover{border-color:var(--accent);color:var(--text);transform:translateY(-1px)}"
+            ".list-copy{display:grid;gap:8px;min-width:0}"
+            ".list-copy strong,.result-card strong{font-size:16px;letter-spacing:-.02em;overflow-wrap:anywhere}"
+            ".list-copy p,.result-card p{color:var(--muted);font-size:14px;overflow-wrap:anywhere}"
+            ".list-meta{color:var(--muted);font-size:13px;white-space:nowrap;align-self:center}"
+            ".empty-state,.center-card{padding:28px;border:1px dashed var(--border);border-radius:22px;background:rgba(255,255,255,.22);text-align:center}"
+            ".empty-state h3{font-size:22px;letter-spacing:-.03em}"
+            ".empty-state p{margin-top:10px;color:var(--muted)}"
+            ".error-shell{display:grid;place-items:center;min-height:100vh}"
+            ".error-card{max-width:760px;text-align:center}"
+            ".error-icon,.download-icon{display:grid;place-items:center;width:88px;height:88px;margin:0 auto 18px;border-radius:26px;background:var(--panel);border:1px solid var(--border);font-size:40px;box-shadow:0 16px 30px var(--shadow-soft)}"
+            "@media (max-width: 900px){.page-shell{padding:26px 18px 40px}.page-hero,.brand,.surface-head{display:grid;grid-template-columns:1fr}.grid-2{grid-template-columns:1fr}.page-chips,.hero-chips{justify-content:flex-start}.surface-note{text-align:left;max-width:none}.search-shell{flex-wrap:wrap}.search-shell button{width:100%}.shortcut-grid{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}.kv-row,.list-card,.result-card{flex-direction:column}.list-meta{align-self:flex-start}}"
             "</style>"
             "<script>"
             "document.addEventListener('submit',function(e){"
@@ -1170,17 +1502,39 @@ class BrowserApp:
         tab = self._current_tab()
         if not tab:
             return
-        rows = "".join(
-            "<tr><td>{time}</td><td><a href='{url}'>{url}</a></td></tr>".format(
-                time=html.escape(entry.get("visited_at", "")),
+        items = "".join(
+            (
+                "<a class='list-card' href='{url}'>"
+                "<div class='list-copy'>"
+                "<span class='list-eyebrow'>{visited_at}</span>"
+                "<strong>{url}</strong>"
+                "<p>{host}</p>"
+                "</div>"
+                "<span class='list-meta'>Open</span>"
+                "</a>"
+            ).format(
+                visited_at=html.escape(entry.get("visited_at", "")),
                 url=html.escape(entry.get("url", "")),
+                host=html.escape(self._display_host(entry.get("url", ""))),
             )
             for entry in self.history
-        ) or "<tr><td colspan='2'>No history yet.</td></tr>"
+        ) or (
+            "<div class='empty-state'>"
+            "<h3>No history yet</h3>"
+            "<p>Visited pages will appear here once you start browsing through the custom stack.</p>"
+            "</div>"
+        )
         body = (
-            "<h1>History</h1>"
-            "<table class='data-table'><thead><tr><th>Visited at</th><th>URL</th></tr></thead>"
-            f"<tbody>{rows}</tbody></table>"
+            "<main class='page-shell'>"
+            + self._page_header(
+                "Library",
+                "History",
+                "Review the pages you opened recently and jump back into any route with one click.",
+                [f"{len(self.history)} entries"],
+            )
+            + "<section class='surface'><div class='list-stack'>"
+            + items
+            + "</div></section></main>"
         )
         tab.view.setHtml(self._page_html("History", body))
         tab.current_url = "internal:history"
@@ -1193,10 +1547,39 @@ class BrowserApp:
         if not tab:
             return
         cards = "".join(
-            f"<div class='card'><h3><a href='{html.escape(url)}'>{html.escape(url)}</a></h3></div>"
+            (
+                "<a class='list-card' href='{url}'>"
+                "<div class='list-copy'>"
+                "<span class='list-eyebrow'>Saved page</span>"
+                "<strong>{url}</strong>"
+                "<p>{host}</p>"
+                "</div>"
+                "<span class='list-meta'>Open</span>"
+                "</a>"
+            ).format(
+                url=html.escape(url),
+                host=html.escape(self._display_host(url)),
+            )
             for url in self.bookmarks
-        ) or "<p class='muted' style='margin:24px 48px'>No bookmarks yet.</p>"
-        tab.view.setHtml(self._page_html("Bookmarks", f"<h1>Bookmarks</h1>{cards}"))
+        ) or (
+            "<div class='empty-state'>"
+            "<h3>No bookmarks yet</h3>"
+            "<p>Save pages from the menu and they will appear here for quick access.</p>"
+            "</div>"
+        )
+        body = (
+            "<main class='page-shell'>"
+            + self._page_header(
+                "Library",
+                "Bookmarks",
+                "Keep important routes close so demos and repeat checks are only one click away.",
+                [f"{len(self.bookmarks)} saved"],
+            )
+            + "<section class='surface'><div class='list-stack'>"
+            + cards
+            + "</div></section></main>"
+        )
+        tab.view.setHtml(self._page_html("Bookmarks", body))
         tab.current_url = "internal:bookmarks"
         tab.title = "Bookmarks"
         self._update_tab_label(tab)
@@ -1359,6 +1742,9 @@ class BrowserApp:
     def _refresh_network_table(self):
         self.network_table.setRowCount(0)
         c = self._theme_colors()
+        success = QColor(c["success"])
+        warning = QColor(c["warning"])
+        error = QColor(c["error"])
         for row, event in enumerate(self.network_events):
             self.network_table.insertRow(row)
             values = [
@@ -1378,15 +1764,15 @@ class BrowserApp:
                     try:
                         code = int(event.status.split(" ", 1)[0])
                         if 200 <= code < 300:
-                            item.setForeground(Qt.GlobalColor.darkGreen)
+                            item.setForeground(success)
                         elif 300 <= code < 400:
-                            item.setForeground(Qt.GlobalColor.darkYellow)
+                            item.setForeground(warning)
                         elif code >= 400:
-                            item.setForeground(Qt.GlobalColor.darkRed)
+                            item.setForeground(error)
                     except (ValueError, IndexError):
                         pass
                 if col == 8 and event.error:
-                    item.setForeground(Qt.GlobalColor.darkRed)
+                    item.setForeground(error)
                 self.network_table.setItem(row, col, item)
 
     def _refresh_cookies_table(self):

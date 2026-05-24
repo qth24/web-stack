@@ -5,17 +5,19 @@ Run from project root:
 """
 
 import json
+import socket
 import sys
-import time
+import threading
 import unittest
 from unittest.mock import patch
 
 # Ensure the dns package is importable when running as a script.
 if __name__ == "__main__" and __package__ is None:
     import os
+
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dns.dns_cache import CacheEntry, DNSCache
+from dns.dns_cache import DNSCache
 from dns.dns_resolver import (
     StaticResolver,
     is_valid_domain,
@@ -23,6 +25,21 @@ from dns.dns_resolver import (
     normalize_domain,
 )
 from dns.dns_server import DNSRequestHandler
+from dns.protocol import (
+    PROTOCOL_VERSION,
+    QTYPE_A,
+    RESOLVE_OPERATION,
+    STATUS_BAD_REQUEST,
+    STATUS_NXDOMAIN,
+    STATUS_OK,
+    STATUS_RATE_LIMITED,
+    STATUS_UNSUPPORTED_QTYPE,
+    STATUS_UNSUPPORTED_VERSION,
+    ProtocolError,
+    build_success_response,
+    decode_request,
+    encode_response,
+)
 from dns.rate_limiter import RateLimiter
 
 # ---------------------------------------------------------------------------
@@ -40,8 +57,20 @@ SAMPLE_RECORDS = {
 CLIENT_ADDR = ("192.168.1.100", 54321)
 
 
-def _make_payload(domain: str) -> bytes:
-    return json.dumps({"domain": domain}).encode("utf-8")
+def _make_request_data(domain: str = "example.local", request_id: str = "req-1", **overrides) -> dict:
+    data = {
+        "version": PROTOCOL_VERSION,
+        "id": request_id,
+        "op": RESOLVE_OPERATION,
+        "domain": domain,
+        "qtype": QTYPE_A,
+    }
+    data.update(overrides)
+    return data
+
+
+def _make_payload(domain: str = "example.local", request_id: str = "req-1", **overrides) -> bytes:
+    return json.dumps(_make_request_data(domain=domain, request_id=request_id, **overrides)).encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +112,6 @@ class TestDNSCache(unittest.TestCase):
     def test_cache_expired_entry_deleted(self):
         self.cache.set("example.local", "127.0.0.1", 10, now=self.now)
         self.cache.get("example.local", now=self.now + 15)
-        # After expiry, the entry should be lazily deleted.
         entry2, state2 = self.cache.get("example.local", now=self.now + 20)
         self.assertIsNone(entry2)
         self.assertEqual(state2, "MISS")
@@ -253,8 +281,6 @@ class TestNormalizeDomain(unittest.TestCase):
 class TestIsValidDomain(unittest.TestCase):
     """Tests for is_valid_domain: valid and invalid domain formats."""
 
-    # --- Valid domains ---
-
     def test_simple_domain(self):
         self.assertTrue(is_valid_domain("example.local"))
 
@@ -269,8 +295,6 @@ class TestIsValidDomain(unittest.TestCase):
 
     def test_numeric_labels(self):
         self.assertTrue(is_valid_domain("123.local"))
-
-    # --- Invalid domains ---
 
     def test_empty_string(self):
         self.assertFalse(is_valid_domain(""))
@@ -301,13 +325,65 @@ class TestIsValidDomain(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestProtocol
+# ---------------------------------------------------------------------------
+
+
+class TestProtocol(unittest.TestCase):
+    """Tests for UDP JSON v1 request decoding and response builders."""
+
+    def test_decode_request_roundtrip(self):
+        payload = _make_payload("Example.Local.", request_id="req-42")
+        query = decode_request(payload)
+        self.assertEqual(query.request_id, "req-42")
+        self.assertEqual(query.domain, "example.local")
+        self.assertEqual(query.qtype, QTYPE_A)
+        self.assertEqual(query.version, PROTOCOL_VERSION)
+        self.assertEqual(query.op, RESOLVE_OPERATION)
+
+    def test_missing_id_is_bad_request(self):
+        payload = json.dumps(_make_request_data(id=None)).encode("utf-8")
+        with self.assertRaises(ProtocolError) as ctx:
+            decode_request(payload)
+        self.assertEqual(ctx.exception.status, STATUS_BAD_REQUEST)
+        self.assertIn("id", str(ctx.exception))
+
+    def test_unsupported_version(self):
+        payload = _make_payload(version="v2")
+        with self.assertRaises(ProtocolError) as ctx:
+            decode_request(payload)
+        self.assertEqual(ctx.exception.status, STATUS_UNSUPPORTED_VERSION)
+
+    def test_wrong_operation_is_bad_request(self):
+        payload = _make_payload(op="lookup")
+        with self.assertRaises(ProtocolError) as ctx:
+            decode_request(payload)
+        self.assertEqual(ctx.exception.status, STATUS_BAD_REQUEST)
+        self.assertIn("op", str(ctx.exception))
+
+    def test_unsupported_qtype(self):
+        payload = _make_payload(qtype="AAAA")
+        with self.assertRaises(ProtocolError) as ctx:
+            decode_request(payload)
+        self.assertEqual(ctx.exception.status, STATUS_UNSUPPORTED_QTYPE)
+
+    def test_build_success_response_contains_ttl(self):
+        query = decode_request(_make_payload("example.local", request_id="req-ok"))
+        response = build_success_response(query, "127.0.0.1", 60)
+        self.assertEqual(response["version"], PROTOCOL_VERSION)
+        self.assertEqual(response["id"], "req-ok")
+        self.assertEqual(response["status"], STATUS_OK)
+        self.assertEqual(response["ttl"], 60)
+
+
+# ---------------------------------------------------------------------------
 # TestDNSRequestHandler
 # ---------------------------------------------------------------------------
 
 
 class TestDNSRequestHandler(unittest.TestCase):
     """Tests for DNSRequestHandler: valid lookup, NXDOMAIN, malformed payload,
-    invalid domain, rate limit rejection."""
+    invalid protocol fields, rate limit rejection."""
 
     def setUp(self):
         self.cache = DNSCache()
@@ -319,101 +395,113 @@ class TestDNSRequestHandler(unittest.TestCase):
         )
         self.now = 1000000.0
 
-    def _handle(self, domain: str, now: float | None = None) -> dict:
-        """Helper: build payload, call handle_packet with time mocked."""
-        payload = _make_payload(domain)
+    def _handle(
+        self,
+        domain: str = "myweb.local",
+        request_id: str = "req-1",
+        now: float | None = None,
+        **overrides,
+    ) -> dict:
+        payload = _make_payload(domain=domain, request_id=request_id, **overrides)
         with patch("time.time", return_value=now or self.now):
             return self.handler.handle_packet(payload, CLIENT_ADDR)
 
-    # --- Valid lookup ---
-
     def test_valid_lookup_returns_ok(self):
-        resp = self._handle("myweb.local")
-        self.assertEqual(resp["status"], "OK")
+        resp = self._handle("myweb.local", request_id="req-ok")
+        self.assertEqual(resp["version"], PROTOCOL_VERSION)
+        self.assertEqual(resp["id"], "req-ok")
+        self.assertEqual(resp["status"], STATUS_OK)
         self.assertEqual(resp["domain"], "myweb.local")
+        self.assertEqual(resp["qtype"], QTYPE_A)
         self.assertEqual(resp["ip"], "127.0.0.1")
-        self.assertIn("expire_at", resp)
+        self.assertEqual(resp["ttl"], 10)
 
     def test_valid_lookup_caches_result(self):
-        self._handle("myweb.local")
-        resp2 = self._handle("myweb.local")
-        self.assertEqual(resp2["status"], "OK")
-        # Second call should be a cache hit (same expire_at).
+        resp1 = self._handle("myweb.local", request_id="req-1")
+        resp2 = self._handle("myweb.local", request_id="req-2")
+        self.assertEqual(resp1["status"], STATUS_OK)
+        self.assertEqual(resp2["status"], STATUS_OK)
+        self.assertEqual(resp2["id"], "req-2")
+        self.assertEqual(resp2["ttl"], 10)
 
     def test_valid_lookup_with_per_record_ttl(self):
-        resp = self._handle("example.local")
-        self.assertEqual(resp["status"], "OK")
+        resp = self._handle("example.local", request_id="req-ttl")
+        self.assertEqual(resp["status"], STATUS_OK)
         self.assertEqual(resp["ip"], "127.0.0.1")
-
-    # --- NXDOMAIN ---
+        self.assertEqual(resp["ttl"], 5)
 
     def test_nxdomain_for_unknown_domain(self):
-        resp = self._handle("unknown.local")
-        self.assertEqual(resp["status"], "NXDOMAIN")
+        resp = self._handle("unknown.local", request_id="req-miss")
+        self.assertEqual(resp["version"], PROTOCOL_VERSION)
+        self.assertEqual(resp["id"], "req-miss")
+        self.assertEqual(resp["status"], STATUS_NXDOMAIN)
         self.assertEqual(resp["domain"], "unknown.local")
+        self.assertEqual(resp["qtype"], QTYPE_A)
         self.assertIsNone(resp["ip"])
+        self.assertIsNone(resp["ttl"])
         self.assertIn("message", resp)
-
-    # --- Malformed payload ---
 
     def test_malformed_json_returns_bad_request(self):
         payload = b"not json at all"
         with patch("time.time", return_value=self.now):
             resp = self.handler.handle_packet(payload, CLIENT_ADDR)
-        self.assertEqual(resp["status"], "BAD_REQUEST")
-        self.assertIsNone(resp["domain"])
+        self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
+        self.assertIsNone(resp["id"])
         self.assertIsNone(resp["ip"])
 
     def test_empty_payload_returns_bad_request(self):
-        payload = b""
         with patch("time.time", return_value=self.now):
-            resp = self.handler.handle_packet(payload, CLIENT_ADDR)
-        self.assertEqual(resp["status"], "BAD_REQUEST")
+            resp = self.handler.handle_packet(b"", CLIENT_ADDR)
+        self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
 
     def test_non_object_json_returns_bad_request(self):
         payload = b'[1, 2, 3]'
         with patch("time.time", return_value=self.now):
             resp = self.handler.handle_packet(payload, CLIENT_ADDR)
-        self.assertEqual(resp["status"], "BAD_REQUEST")
+        self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
 
     def test_missing_domain_field_returns_bad_request(self):
-        payload = json.dumps({"foo": "bar"}).encode("utf-8")
+        payload = json.dumps(
+            {
+                "version": PROTOCOL_VERSION,
+                "id": "req-1",
+                "op": RESOLVE_OPERATION,
+                "qtype": QTYPE_A,
+            }
+        ).encode("utf-8")
         with patch("time.time", return_value=self.now):
             resp = self.handler.handle_packet(payload, CLIENT_ADDR)
-        self.assertEqual(resp["status"], "BAD_REQUEST")
+        self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
 
     def test_non_string_domain_returns_bad_request(self):
-        payload = json.dumps({"domain": 123}).encode("utf-8")
+        payload = json.dumps(_make_request_data(domain=123)).encode("utf-8")
         with patch("time.time", return_value=self.now):
             resp = self.handler.handle_packet(payload, CLIENT_ADDR)
-        self.assertEqual(resp["status"], "BAD_REQUEST")
+        self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
 
     def test_empty_string_domain_returns_bad_request(self):
-        payload = json.dumps({"domain": ""}).encode("utf-8")
+        payload = json.dumps(_make_request_data(domain="")).encode("utf-8")
         with patch("time.time", return_value=self.now):
             resp = self.handler.handle_packet(payload, CLIENT_ADDR)
-        self.assertEqual(resp["status"], "BAD_REQUEST")
+        self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
 
     def test_whitespace_only_domain_returns_bad_request(self):
-        payload = json.dumps({"domain": "   "}).encode("utf-8")
+        payload = json.dumps(_make_request_data(domain="   ")).encode("utf-8")
         with patch("time.time", return_value=self.now):
             resp = self.handler.handle_packet(payload, CLIENT_ADDR)
-        self.assertEqual(resp["status"], "BAD_REQUEST")
+        self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
 
     def test_non_utf8_payload_returns_bad_request(self):
         payload = b"\xff\xfe\x00\x01"
         with patch("time.time", return_value=self.now):
             resp = self.handler.handle_packet(payload, CLIENT_ADDR)
-        self.assertEqual(resp["status"], "BAD_REQUEST")
-
-    # --- Invalid domain ---
+        self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
 
     def test_invalid_domain_format_returns_bad_request(self):
-        resp = self._handle("-invalid.local")
-        self.assertEqual(resp["status"], "BAD_REQUEST")
+        resp = self._handle("-invalid.local", request_id="req-bad")
+        self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
         self.assertEqual(resp["message"], "Invalid domain format")
-
-    # --- Rate limit ---
+        self.assertEqual(resp["domain"], "-invalid.local")
 
     def test_rate_limit_rejection(self):
         limiter = RateLimiter(max_queries=2, window_seconds=10)
@@ -422,23 +510,19 @@ class TestDNSRequestHandler(unittest.TestCase):
             resolver=self.resolver,
             rate_limiter=limiter,
         )
-        # First two requests should succeed.
-        for _ in range(2):
-            payload = _make_payload("myweb.local")
+        for request_id in ("req-1", "req-2"):
+            payload = _make_payload("myweb.local", request_id=request_id)
             with patch("time.time", return_value=self.now):
                 resp = handler.handle_packet(payload, CLIENT_ADDR)
-            self.assertEqual(resp["status"], "OK")
+            self.assertEqual(resp["status"], STATUS_OK)
 
-        # Third request should be rate limited.
-        payload = _make_payload("myweb.local")
+        payload = _make_payload("myweb.local", request_id="req-3")
         with patch("time.time", return_value=self.now):
             resp = handler.handle_packet(payload, CLIENT_ADDR)
-        self.assertEqual(resp["status"], "RATE_LIMITED")
-        self.assertIsNone(resp["domain"])
-        self.assertIsNone(resp["ip"])
+        self.assertEqual(resp["status"], STATUS_RATE_LIMITED)
+        self.assertEqual(resp["id"], "req-3")
+        self.assertEqual(resp["domain"], "myweb.local")
         self.assertIn("retry_after", resp)
-
-    # --- Packet too large ---
 
     def test_oversized_packet_returns_bad_request(self):
         handler = DNSRequestHandler(
@@ -446,10 +530,10 @@ class TestDNSRequestHandler(unittest.TestCase):
             resolver=self.resolver,
             max_request_bytes=64,
         )
-        payload = b'{"domain": "' + b"x" * 100 + b'"}'
+        payload = _make_payload("example.local", request_id="x" * 100)
         with patch("time.time", return_value=self.now):
             resp = handler.handle_packet(payload, CLIENT_ADDR)
-        self.assertEqual(resp["status"], "BAD_REQUEST")
+        self.assertEqual(resp["status"], STATUS_BAD_REQUEST)
         self.assertIn("too large", resp["message"])
 
 
@@ -477,7 +561,6 @@ class TestRateLimiter(unittest.TestCase):
         limiter = RateLimiter(max_queries=1, window_seconds=10)
         self.assertTrue(limiter.is_allowed("1.1.1.1"))
         self.assertFalse(limiter.is_allowed("1.1.1.1"))
-        # Different IP should still be allowed.
         self.assertTrue(limiter.is_allowed("2.2.2.2"))
 
     def test_retry_after_positive_when_blocked(self):
@@ -499,7 +582,6 @@ class TestRateLimiter(unittest.TestCase):
             self.assertTrue(limiter.is_allowed("1.2.3.4"))
             self.assertFalse(limiter.is_allowed("1.2.3.4"))
 
-        # After window expires, should be allowed again.
         with patch("time.time", return_value=now + 11):
             self.assertTrue(limiter.is_allowed("1.2.3.4"))
 
@@ -530,6 +612,59 @@ class TestIsValidIPv4(unittest.TestCase):
         self.assertFalse(is_valid_ipv4("256.256.256.256"))
         self.assertFalse(is_valid_ipv4(""))
         self.assertFalse(is_valid_ipv4("abc.def.ghi.jkl"))
+
+
+# ---------------------------------------------------------------------------
+# TestDNSUDPJSONV1Smoke
+# ---------------------------------------------------------------------------
+
+
+class TestDNSUDPJSONV1Smoke(unittest.TestCase):
+    """Live UDP roundtrip test for the v1 JSON contract."""
+
+    def test_live_udp_query_roundtrip(self):
+        try:
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        except PermissionError as exc:
+            self.skipTest(f"UDP sockets are not available in this environment: {exc}")
+
+        handler = DNSRequestHandler(
+            cache=DNSCache(),
+            resolver=StaticResolver({"example.local": {"ip": "127.0.0.1", "ttl": 12}}, default_ttl=10),
+            rate_limiter=None,
+        )
+        server_socket.bind(("127.0.0.1", 0))
+        server_socket.settimeout(1)
+        host, port = server_socket.getsockname()
+
+        def serve_one():
+            try:
+                payload, client_addr = server_socket.recvfrom(2048)
+                response = handler.handle_packet(payload, client_addr)
+                server_socket.sendto(encode_response(response), client_addr)
+            finally:
+                server_socket.close()
+
+        thread = threading.Thread(target=serve_one, daemon=True)
+        thread.start()
+
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_socket.settimeout(1)
+        try:
+            client_socket.sendto(_make_payload("example.local", request_id="smoke-1"), (host, port))
+            data, _ = client_socket.recvfrom(2048)
+        finally:
+            client_socket.close()
+
+        thread.join(timeout=1)
+        response = json.loads(data.decode("utf-8"))
+        self.assertEqual(response["version"], PROTOCOL_VERSION)
+        self.assertEqual(response["id"], "smoke-1")
+        self.assertEqual(response["status"], STATUS_OK)
+        self.assertEqual(response["domain"], "example.local")
+        self.assertEqual(response["qtype"], QTYPE_A)
+        self.assertEqual(response["ip"], "127.0.0.1")
+        self.assertEqual(response["ttl"], 12)
 
 
 if __name__ == "__main__":

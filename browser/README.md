@@ -3,7 +3,7 @@
 ## Structure
 
 - `core/url_parser.py`: parse and validate URL (`http/https`, host, port, path, query).
-- `core/dns_client.py`: send UDP JSON DNS query to the configured DNS server with TTL cache.
+- `core/dns_client.py`: send UDP JSON v1 DNS queries to the configured DNS server with TTL cache.
 - `core/http_client.py`: send raw HTTP requests via TCP and parse status, headers, body.
 - `gui/browser_gui.py`: Chrome-like GUI browser with tabs, custom DNS, history, bookmarks, downloads, cookies/session, incognito mode, settings, and DevTools panel.
 
