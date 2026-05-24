@@ -92,5 +92,10 @@ DEFAULT_BOOKMARKS = _get_list(
     ],
 )
 
+ENABLE_HTTP_CACHE = _get_bool("BROWSER_ENABLE_HTTP_CACHE", True)
+HTTP_CACHE_MAX_MB = _get_int("BROWSER_HTTP_CACHE_MAX_MB", 64)
+HTTP_CACHE_MAX_ENTRY_MB = _get_int("BROWSER_HTTP_CACHE_MAX_ENTRY_MB", 4)
+
 STATE_DIR = Path(_get_str("BROWSER_STATE_DIR", str(Path.home() / ".mini_web_browser"))).expanduser()
 STATE_PATH = Path(_get_str("BROWSER_STATE_PATH", str(STATE_DIR / "browser_state.json"))).expanduser()
+COOKIE_STATE_PATH = STATE_DIR / "cookies.json"

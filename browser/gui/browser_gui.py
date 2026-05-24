@@ -22,6 +22,11 @@ try:
         from PySide6.QtWebEngineCore import QWebEnginePage
     except ImportError:
         QWebEnginePage = None
+    try:
+        from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineCookieStore
+    except ImportError:
+        QWebEngineProfile = None
+        QWebEngineCookieStore = None
     from PySide6.QtWebEngineWidgets import QWebEngineView
     from PySide6.QtWidgets import (
         QAbstractItemView,
@@ -63,16 +68,21 @@ except ImportError:
 
 from browser.core.config import (
     CONFIGURED_KEYS,
+    COOKIE_STATE_PATH,
     DEFAULT_BOOKMARKS,
     DNS_HOST,
     DNS_PORT,
     DNS_TIMEOUT,
     ENABLE_DNS_CACHE,
+    ENABLE_HTTP_CACHE,
     FORCE_CUSTOM_DNS_ALL_HOSTS,
     HOME_URL,
+    HTTP_CACHE_MAX_ENTRY_MB,
+    HTTP_CACHE_MAX_MB,
     HTTP_DEFAULT_PORT,
     HTTPS_DEFAULT_PORT,
     SEARCH_URL,
+    STATE_DIR,
     STATE_PATH,
     BROWSER_THEME,
     SEARCH_ENGINE,
@@ -82,6 +92,8 @@ from browser.core.dns_client import DNSClient, DNSError
 from browser.core.host_routing import is_ipv4_address, should_use_custom_dns
 from browser.core.http_client import HTTPClient, HTTPError, HTTPResponse
 from browser.core.url_parser import URLParseError, parse_url
+from browser.core.cookies import CookieJar
+from browser.core.http_cache import HTTPCache
 
 
 @dataclass
@@ -92,6 +104,7 @@ class BrowserSettings:
     http_default_port: int = HTTP_DEFAULT_PORT
     https_default_port: int = HTTPS_DEFAULT_PORT
     enable_dns_cache: bool = ENABLE_DNS_CACHE
+    enable_http_cache: bool = ENABLE_HTTP_CACHE
     home_url: str = HOME_URL
     search_url: str = SEARCH_URL
     theme: str = BROWSER_THEME
@@ -128,7 +141,7 @@ class BrowserTab:
     last_response: Optional[HTTPResponse] = None
     last_event: Optional[NetworkEvent] = None
     incognito: bool = False
-    cookies: dict[str, dict[str, str]] = field(default_factory=dict)
+    incognito_jar_id: int = 0
 
 
 class BrowserPage(QWebEnginePage if QWebEnginePage else object):
@@ -172,6 +185,8 @@ class SettingsDialog(QDialog):
         self.http_port_input.setValue(settings.http_default_port)
         self.cache_input = QCheckBox("Enable DNS TTL cache")
         self.cache_input.setChecked(settings.enable_dns_cache)
+        self.http_cache_input = QCheckBox("Enable browser HTTP cache")
+        self.http_cache_input.setChecked(settings.enable_http_cache)
         self.home_url_input = QLineEdit(settings.home_url)
         self.search_url_input = QLineEdit(settings.search_url)
         self.theme_input = QComboBox()
@@ -195,6 +210,7 @@ class SettingsDialog(QDialog):
         form.addRow("Theme", self.theme_input)
         form.addRow("Font size", self.font_size_input)
         form.addRow("", self.cache_input)
+        form.addRow("", self.http_cache_input)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -213,6 +229,7 @@ class SettingsDialog(QDialog):
             dns_timeout=float(self.dns_timeout_input.value()),
             http_default_port=self.http_port_input.value(),
             enable_dns_cache=self.cache_input.isChecked(),
+            enable_http_cache=self.http_cache_input.isChecked(),
             home_url=self.home_url_input.text().strip() or HOME_URL,
             search_url=self.search_url_input.text().strip() or SEARCH_URL,
             theme=self.theme_input.currentText(),
@@ -227,11 +244,21 @@ class BrowserApp:
         self.bookmarks = self._load_list("bookmarks", DEFAULT_BOOKMARKS)
         self.shortcuts = self._load_shortcuts(DEFAULT_BOOKMARKS)
         self.history = self._load_history()
-        self.cookies = self._load_cookies()
         self.network_events: list[NetworkEvent] = []
+
+        self.cookie_jar = CookieJar(COOKIE_STATE_PATH)
+        self.cookie_jar.load()
+        self._incognito_jar_counter: int = 0
+        self._incognito_jars: dict[int, CookieJar] = {}
+        self._normal_profile: Any = None
+        self._qt_cookie_store: Any = None
+
+        self.http_cache = HTTPCache(STATE_DIR / "http_cache", HTTP_CACHE_MAX_MB, HTTP_CACHE_MAX_ENTRY_MB)
 
         self.dns_client = self._make_dns_client()
         self.http_client = HTTPClient()
+
+        self._setup_qt_profiles()
 
         self.window = QMainWindow()
         self.window.setWindowTitle("WaterCat Browser")
@@ -247,6 +274,122 @@ class BrowserApp:
         self._bind_actions()
         self._apply_style()
         self._new_tab(self.settings.home_url)
+
+    def _setup_qt_profiles(self) -> None:
+        if QWebEngineProfile is None:
+            return
+        try:
+            profile_dir = str(STATE_DIR / "webengine-profile")
+            cache_dir = str(STATE_DIR / "webengine-cache")
+            self._normal_profile = QWebEngineProfile("watercat_normal")
+            self._normal_profile.setPersistentStoragePath(profile_dir)
+            self._normal_profile.setCachePath(cache_dir)
+            self._normal_profile.setHttpCacheType(
+                QWebEngineProfile.HttpCacheType.DiskHttpCache
+            )
+            self._normal_profile.setPersistentCookiesPolicy(
+                QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies
+            )
+            self._qt_cookie_store = self._normal_profile.cookieStore()
+            if self._qt_cookie_store is not None:
+                self._qt_cookie_store.cookieAdded.connect(self._on_qt_cookie_added)
+                self._qt_cookie_store.cookieRemoved.connect(self._on_qt_cookie_removed)
+            self._seed_qt_cookies()
+        except Exception:
+            self._normal_profile = None
+            self._qt_cookie_store = None
+
+    def _seed_qt_cookies(self) -> None:
+        if self._qt_cookie_store is None:
+            return
+        try:
+            from PySide6.QtNetwork import QNetworkCookie
+        except ImportError:
+            return
+        for cookie in self.cookie_jar.cookie_list:
+            if cookie.is_expired():
+                continue
+            self._set_qt_cookie(cookie)
+
+    def _set_qt_cookie(self, cookie: Any) -> None:
+        if self._qt_cookie_store is None:
+            return
+        try:
+            from PySide6.QtNetwork import QNetworkCookie
+            from PySide6.QtCore import QDateTime
+        except ImportError:
+            return
+        domain = cookie.domain if not cookie.host_only else f".{cookie.domain}"
+        qt_cookie = QNetworkCookie()
+        qt_cookie.setName(cookie.name.encode("utf-8"))
+        qt_cookie.setValue(cookie.value.encode("utf-8"))
+        qt_cookie.setDomain(domain)
+        qt_cookie.setPath(cookie.path)
+        qt_cookie.setSecure(cookie.secure)
+        qt_cookie.setHttpOnly(cookie.http_only)
+        if cookie.expires_at is not None:
+            expires_dt = QDateTime.fromSecsSinceEpoch(int(cookie.expires_at))
+            qt_cookie.setExpirationDate(expires_dt)
+        self._qt_cookie_store.setCookie(qt_cookie)
+
+    def _delete_qt_cookie(self, name: str, domain: str, path: str = "/") -> None:
+        if self._qt_cookie_store is None:
+            return
+        try:
+            from PySide6.QtNetwork import QNetworkCookie
+        except ImportError:
+            return
+        self._qt_cookie_store.loadAllCookies()
+        qt_domain = f".{domain}"
+        for qt_cookie in self._qt_cookie_store.allCookies():
+            cname = qt_cookie.name().data().decode("utf-8", errors="replace")
+            cdomain = qt_cookie.domain()
+            cpath = qt_cookie.path()
+            if cname == name and (cdomain == domain or cdomain == qt_domain) and cpath == path:
+                self._qt_cookie_store.deleteCookie(qt_cookie)
+
+    def _on_qt_cookie_added(self, qt_cookie: Any) -> None:
+        try:
+            name = qt_cookie.name().data().decode("utf-8", errors="replace")
+            value = qt_cookie.value().data().decode("utf-8", errors="replace")
+            domain = qt_cookie.domain().lstrip(".")
+            path = qt_cookie.path()
+            secure = qt_cookie.isSecure()
+            http_only = qt_cookie.isHttpOnly()
+            expires = None
+            if qt_cookie.expirationDate().isValid():
+                expires = qt_cookie.expirationDate().toSecsSinceEpoch()
+            from browser.core.cookies import Cookie
+            nc = Cookie(
+                name=name, value=value, domain=domain,
+                host_only=not qt_cookie.domain().startswith("."),
+                path=path, secure=secure, http_only=http_only,
+                expires_at=expires, same_site="Lax",
+            )
+            existing = [c for c in self.cookie_jar.cookie_list
+                        if c.name == name and c.domain == domain and c.path == path]
+            if not existing:
+                self.cookie_jar.store_cookie(nc)
+                self.cookie_jar.save()
+        except Exception:
+            pass
+
+    def _on_qt_cookie_removed(self, qt_cookie: Any) -> None:
+        try:
+            name = qt_cookie.name().data().decode("utf-8", errors="replace")
+            domain = qt_cookie.domain().lstrip(".")
+            path = qt_cookie.path()
+            self.cookie_jar.delete_cookie(name, domain, path)
+            self.cookie_jar.save()
+        except Exception:
+            pass
+
+    def _get_cookie_jar(self, tab: BrowserTab) -> CookieJar:
+        if tab.incognito:
+            if tab.incognito_jar_id not in self._incognito_jars:
+                self._incognito_jars[tab.incognito_jar_id] = CookieJar()
+            return self._incognito_jars[tab.incognito_jar_id]
+        return self.cookie_jar
 
     def _build_ui(self):
         central = QWidget()
@@ -708,11 +851,33 @@ class BrowserApp:
     def _new_tab(self, url: str = "", incognito: bool = False):
         view = QWebEngineView()
         tab = BrowserTab(view=view, incognito=incognito)
+        if incognito:
+            self._incognito_jar_counter += 1
+            tab.incognito_jar_id = self._incognito_jar_counter
+            self._incognito_jars[tab.incognito_jar_id] = CookieJar()
         view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         view.customContextMenuRequested.connect(lambda pos, v=view: self._show_context_menu(v, pos))
         if QWebEnginePage:
             tab.page = BrowserPage(self, tab)
             view.setPage(tab.page)
+        if QWebEngineProfile is not None:
+            try:
+                if incognito:
+                    profile = QWebEngineProfile("watercat_incognito")
+                    profile.setPersistentCookiesPolicy(
+                        QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies
+                    )
+                else:
+                    profile = self._normal_profile
+                if profile:
+                    view.page().profile().deleteLater()
+                    tab_page = QWebEnginePage(profile, view)
+                    view.setPage(tab_page)
+                    tab.page = BrowserPage(self, tab)
+                    tab_page.acceptNavigationRequest = lambda url, nav_type, is_main_frame: tab.page.acceptNavigationRequest(url, nav_type, is_main_frame)
+                    tab.page.browser_tab = tab
+            except Exception:
+                pass
         view.loadStarted.connect(lambda t=tab: self._on_view_load_started(t))
         view.loadProgress.connect(lambda progress, t=tab: self._on_view_load_progress(t, progress))
         view.loadFinished.connect(lambda ok, t=tab: self._on_view_load_finished(t, ok))
@@ -731,6 +896,10 @@ class BrowserApp:
         if self.tabs.count() == 1:
             self._new_tab(self.settings.home_url)
         widget = self.tabs.widget(index)
+        if widget:
+            tab = widget.property("browser_tab")
+            if tab and tab.incognito and tab.incognito_jar_id in self._incognito_jars:
+                del self._incognito_jars[tab.incognito_jar_id]
         self.tabs.removeTab(index)
         if widget:
             widget.deleteLater()
@@ -843,18 +1012,18 @@ class BrowserApp:
             event.endpoint = f"{dns_ip}:{http_port}"
             self._set_status("Connecting...")
 
-            request_headers = self._request_headers(parsed.host, tab)
-            event.request_headers = dict(request_headers)
             request_path = self._request_path(parsed.raw, parsed.path)
+            scheme = parsed.protocol
+
             self._set_status("Loading...")
             try:
-                response = self.http_client.get(
-                    ip=dns_ip,
+                response, cache_state, req_headers = self._custom_fetch(
+                    scheme=scheme,
+                    host=parsed.host,
                     port=http_port,
                     path=request_path,
-                    host=parsed.host,
-                    extra_headers=request_headers,
-                    use_tls=(parsed.protocol == "https"),
+                    ip=dns_ip,
+                    tab=tab,
                 )
             except HTTPError as exc:
                 event.status = self._http_error_status(str(exc))
@@ -863,13 +1032,15 @@ class BrowserApp:
                 self._render_error(tab, event.status, str(exc), code=self._status_code(event.status))
                 return
 
-            self._store_cookies(parsed.host, response, tab)
+            event.request_headers = req_headers
+
             event.status = f"{response.status_code} {response.status_text}".strip()
             event.response_headers = dict(response.headers)
             event.duration_ms = int((time.time() - start) * 1000)
+            event.cache_state = cache_state
             tab.last_response = response
             tab.last_event = event
-            self._render_response(tab, response, dns_ip, http_port, request_path)
+            self._render_response(tab, response, dns_ip, http_port, request_path, cache_state)
             self._record_event(event)
 
             if record_navigation and tab.current_url and tab.current_url != parsed.raw:
@@ -886,20 +1057,12 @@ class BrowserApp:
             self._refresh_all()
             self._sync_toolbar()
 
-    def _render_response(self, tab: BrowserTab, response: HTTPResponse, ip: str, port: int, path: str):
+    def _render_response(self, tab: BrowserTab, response: HTTPResponse, ip: str, port: int, path: str, cache_state: str = "miss"):
         content_type = response.headers.get("Content-Type", "").lower()
         protocol = "https" if tab.last_event and tab.last_event.url.startswith("https://") else "http"
         base_url = QUrl(f"{protocol}://{ip}:{port}{path}")
 
-        # Determine HTTP cache state
-        if response.status_code == 304:
-            cache_state = "304"
-        elif response.headers.get("ETag"):
-            cache_state = "hit"
-        else:
-            cache_state = "miss"
-
-        if tab.last_event:
+        if tab.last_event and not tab.last_event.cache_state:
             tab.last_event.cache_state = cache_state
 
         if response.is_ok and "text/html" in content_type:
@@ -971,6 +1134,7 @@ class BrowserApp:
         """Inline same-origin CSS as <style> tags and convert same-origin images to data URIs."""
         host = tab.last_event.host if tab.last_event else ""
         use_tls = tab.last_event.url.startswith("https://") if tab.last_event else False
+        scheme = "https" if use_tls else "http"
 
         css_link_patterns = [
             r'<link\s+[^>]*rel=["\']stylesheet["\'][^>]*href=["\']([^"\']+)["\'][^>]*>',
@@ -981,27 +1145,17 @@ class BrowserApp:
         def _is_same_origin(url_str: str) -> tuple[bool, str]:
             """Returns (is_same_origin, path_only)."""
             parsed = urlparse(url_str)
-            # Handle data URIs and other schemes
             if parsed.scheme and parsed.scheme not in ("http", "https"):
                 return False, url_str
-            
-            # If no netloc, it's relative
             if not parsed.netloc:
-                # Still check if it looks like a protocol-relative URL that urlparse might have missed 
-                # (though urlparse usually gets //host/path)
                 if url_str.startswith("//"):
-                    # This shouldn't happen with urlparse usually, but just in case
                     return False, url_str
                 return True, url_str
-
-            # Absolute or protocol-relative: compare hostnames
             if parsed.hostname == host:
-                # Return the path and query part only for the request
                 path = parsed.path or "/"
                 if parsed.query:
                     path += f"?{parsed.query}"
                 return True, path
-            
             return False, url_str
 
         def _skip_external(url: str, tag: str) -> str:
@@ -1019,7 +1173,7 @@ class BrowserApp:
                     html_body = html_body[:match.start()] + _skip_external(href, full_tag) + html_body[match.end():]
                     continue
                 try:
-                    resp = self.http_client.get(ip=ip, port=port, path=request_path, host=host, use_tls=use_tls)
+                    resp, _, _ = self._custom_fetch(scheme=scheme, host=host, port=port, path=request_path, ip=ip, tab=tab)
                     if resp.is_ok:
                         replacement = f"<style>{resp.body}</style>"
                         html_body = html_body[:match.start()] + replacement + html_body[match.end():]
@@ -1036,7 +1190,7 @@ class BrowserApp:
                     html_body = html_body[:match.start()] + _skip_external(src, full_tag) + html_body[match.end():]
                 continue
             try:
-                resp = self.http_client.get(ip=ip, port=port, path=request_path, host=host, use_tls=use_tls)
+                resp, _, _ = self._custom_fetch(scheme=scheme, host=host, port=port, path=request_path, ip=ip, tab=tab)
                 if resp.is_ok:
                     mime = resp.headers.get("Content-Type", "application/octet-stream")
                     encoded = base64.b64encode(resp.body_bytes).decode("ascii")
@@ -1288,6 +1442,8 @@ class BrowserApp:
         tab = self._current_tab()
         if not tab:
             return
+        cookie_count = len(self.cookie_jar)
+        cache_count = self.http_cache.entry_count()
         body = (
             "<main class='page-shell'>"
             + self._page_header(
@@ -1315,8 +1471,21 @@ class BrowserApp:
             + f"<option value='google' {'selected' if self.settings.search_engine == 'google' else ''}>Google</option>"
             + f"<option value='bing' {'selected' if self.settings.search_engine == 'bing' else ''}>Bing</option>"
             + "</select></label>"
+            + "<label class='field'><span>Enable browser HTTP cache</span>"
+            + f"<input type='hidden' name='enable_http_cache_off' value='off'>"
+            + f"<input type='checkbox' name='enable_http_cache' value='on' {'checked' if self.settings.enable_http_cache else ''} style='width:auto'>"
+            + "</label>"
             + "<div class='action-row'><button type='submit'>Save settings</button></div>"
             + "</form></div>"
+            + "<div class='surface'>"
+            + "<div class='surface-head'><div><p class='section-kicker'>Storage</p><h2>Manage local data</h2></div></div>"
+            + "<div class='kv-list'>"
+            + "<div class='kv-row'><span>Cookies</span><b>{cookie_count}</b></div>"
+            + "<div class='kv-row'><span>HTTP cache entries</span><b>{cache_count}</b></div>"
+            + "</div>"
+            + "<a class='button-link' href='internal:clear-cookies'>Clear cookies</a>"
+            + "<a class='button-link' href='internal:clear-cache'>Clear browser cache</a>"
+            + "</div></div>"
             + "<div class='surface'>"
             + "<div class='surface-head'><div><p class='section-kicker'>Connection</p><h2>Current runtime values</h2></div></div>"
             + "<div class='kv-list'>"
@@ -1428,26 +1597,110 @@ class BrowserApp:
             f"{body}</body></html>"
         )
 
-    def _request_headers(self, host: str, tab: BrowserTab) -> dict[str, str]:
-        cookies = tab.cookies if tab.incognito else self.cookies
-        domain_cookies = cookies.get(host, {})
-        if not domain_cookies:
-            return {}
-        cookie_value = "; ".join(f"{name}={value}" for name, value in domain_cookies.items())
-        return {"Cookie": cookie_value}
+    def _request_headers(self, host: str, scheme: str, request_path: str, tab: BrowserTab) -> dict[str, str]:
+        jar = self._get_cookie_jar(tab)
+        cookie_header = jar.request_cookie_header(host, scheme, request_path)
+        if cookie_header:
+            return {"Cookie": cookie_header}
+        return {}
 
-    def _store_cookies(self, host: str, response: HTTPResponse, tab: BrowserTab):
+    def _store_cookies(self, host: str, scheme: str, request_path: str, response: HTTPResponse, tab: BrowserTab):
         if not response.set_cookie_headers:
             return
-        jar = tab.cookies if tab.incognito else self.cookies
-        jar.setdefault(host, {})
-        for header in response.set_cookie_headers:
-            pair = header.split(";", 1)[0]
-            if "=" in pair:
-                name, value = pair.split("=", 1)
-                jar[host][name.strip()] = value.strip()
+        jar = self._get_cookie_jar(tab)
+        new_cookies = jar.store_from_response(response.set_cookie_headers, host, scheme, request_path)
         if not tab.incognito:
-            self._save_state()
+            jar.save()
+            for cookie in new_cookies:
+                self._set_qt_cookie(cookie)
+
+    def _custom_fetch(
+        self,
+        scheme: str,
+        host: str,
+        port: int,
+        path: str,
+        ip: str,
+        tab: BrowserTab,
+    ) -> tuple[HTTPResponse, str, dict[str, str]]:
+        """Centralized fetch helper: DNS already resolved, handles cookies + cache.
+        Returns (response, cache_state, request_headers)."""
+        request_headers = self._request_headers(host, scheme, path, tab)
+        cache_state = "bypass"
+        cached_entry = None
+
+        if self.settings.enable_http_cache:
+            cached_entry = self.http_cache.lookup(scheme, host, port, path)
+            if cached_entry:
+                if cached_entry.is_fresh:
+                    response = HTTPResponse(
+                        status_code=cached_entry.status_code,
+                        status_text=cached_entry.status_text,
+                        headers=dict(cached_entry.headers),
+                        body=cached_entry.body_bytes.decode("utf-8", errors="replace"),
+                        raw=cached_entry.body_bytes.decode("utf-8", errors="replace"),
+                        raw_bytes=cached_entry.body_bytes,
+                        body_bytes=cached_entry.body_bytes,
+                        set_cookie_headers=[],
+                    )
+                    return response, "hit", request_headers
+                elif cached_entry.can_revalidate():
+                    if cached_entry.etag:
+                        request_headers["If-None-Match"] = cached_entry.etag
+                    if cached_entry.last_modified:
+                        request_headers["If-Modified-Since"] = cached_entry.last_modified
+
+        response = self.http_client.get(
+            ip=ip,
+            port=port,
+            path=path,
+            host=host,
+            extra_headers=request_headers,
+            use_tls=(scheme == "https"),
+        )
+
+        self._store_cookies(host, scheme, path, response, tab)
+
+        cc = response.headers.get("Cache-Control", "").lower()
+        if self.settings.enable_http_cache:
+            cookie_in_use = bool(request_headers.get("Cookie"))
+            has_set_cookie = bool(response.set_cookie_headers)
+            if not cookie_in_use and not has_set_cookie and "no-store" not in cc:
+                if response.status_code == 304 and cached_entry:
+                    merged_headers = dict(cached_entry.headers)
+                    for k, v in response.headers.items():
+                        merged_headers[k] = v
+                    response = HTTPResponse(
+                        status_code=cached_entry.status_code,
+                        status_text=cached_entry.status_text,
+                        headers=merged_headers,
+                        body=cached_entry.body_bytes.decode("utf-8", errors="replace"),
+                        raw="",
+                        raw_bytes=cached_entry.body_bytes,
+                        body_bytes=cached_entry.body_bytes,
+                        set_cookie_headers=response.set_cookie_headers,
+                    )
+                    cache_state = "revalidated"
+                    self.http_cache.store(
+                        scheme, host, port, path,
+                        cached_entry.status_code, cached_entry.status_text,
+                        merged_headers, cached_entry.body_bytes,
+                    )
+                elif response.status_code == 200:
+                    cache_state = "miss"
+                    self.http_cache.store(
+                        scheme, host, port, path,
+                        response.status_code, response.status_text,
+                        dict(response.headers), response.body_bytes,
+                    )
+                else:
+                    cache_state = "miss"
+            else:
+                cache_state = "miss"
+        else:
+            cache_state = "miss"
+
+        return response, cache_state, request_headers
 
     def _download_current(self):
         tab = self._current_tab()
@@ -1695,6 +1948,19 @@ class BrowserApp:
             self._apply_settings_from_query(values)
             self._show_settings_tab()
             return
+        if action == "clear-cookies":
+            self.cookie_jar.clear()
+            self.cookie_jar.save()
+            for jar in self._incognito_jars.values():
+                jar.clear()
+            self._set_status("Cookies cleared.")
+            self._show_settings_tab()
+            return
+        if action == "clear-cache":
+            self.http_cache.clear()
+            self._set_status("Browser cache cleared.")
+            self._show_settings_tab()
+            return
 
     def _mark_internal_tab(
         self,
@@ -1718,6 +1984,7 @@ class BrowserApp:
         self.settings.theme = self._normalize_theme(theme)
         self.settings.font_size = max(12, min(24, self._as_int(font_size, self.settings.font_size)))
         self.settings.search_engine = self._normalize_search_engine(search_engine)
+        self.settings.enable_http_cache = "enable_http_cache" in values
         self._apply_style()
         self._save_state()
 
@@ -1779,13 +2046,12 @@ class BrowserApp:
 
     def _refresh_cookies_table(self):
         self.cookies_table.setRowCount(0)
-        row = 0
-        for domain, values in self.cookies.items():
-            for name, value in values.items():
-                self.cookies_table.insertRow(row)
-                for col, text in enumerate([domain, name, value]):
-                    self.cookies_table.setItem(row, col, QTableWidgetItem(text))
-                row += 1
+        for row, cookie in enumerate(self.cookie_jar.cookie_list):
+            if cookie.is_expired():
+                continue
+            self.cookies_table.insertRow(row)
+            for col, text in enumerate([cookie.domain, cookie.name, cookie.value]):
+                self.cookies_table.setItem(row, col, QTableWidgetItem(text))
 
     def _refresh_side_lists(self):
         self.history_list.clear()
@@ -2072,6 +2338,9 @@ class BrowserApp:
             enable_dns_cache=bool(
                 self._setting_raw(raw, "enable_dns_cache", "BROWSER_ENABLE_DNS_CACHE", ENABLE_DNS_CACHE)
             ),
+            enable_http_cache=bool(
+                self._setting_raw(raw, "enable_http_cache", "BROWSER_ENABLE_HTTP_CACHE", ENABLE_HTTP_CACHE)
+            ),
             home_url=self._setting_str(raw, "home_url", "BROWSER_HOME_URL", HOME_URL),
             search_url=self._setting_str(raw, "search_url", "BROWSER_SEARCH_URL", SEARCH_URL),
             theme=self._normalize_theme(
@@ -2125,16 +2394,6 @@ class BrowserApp:
                 result.append({"url": url, "visited_at": visited_at})
         return result
 
-    def _load_cookies(self) -> dict[str, dict[str, str]]:
-        values = self._read_state().get("cookies", {})
-        if not isinstance(values, dict):
-            return {}
-        result: dict[str, dict[str, str]] = {}
-        for domain, cookies in values.items():
-            if isinstance(cookies, dict):
-                result[str(domain)] = {str(k): str(v) for k, v in cookies.items()}
-        return result
-
     def _read_state(self) -> dict[str, Any]:
         try:
             with open(STATE_PATH, "r", encoding="utf-8") as file_obj:
@@ -2152,6 +2411,7 @@ class BrowserApp:
                 "dns_timeout": self.settings.dns_timeout,
                 "http_default_port": self.settings.http_default_port,
                 "enable_dns_cache": self.settings.enable_dns_cache,
+                "enable_http_cache": self.settings.enable_http_cache,
                 "home_url": self.settings.home_url,
                 "search_url": self.settings.search_url,
                 "theme": self.settings.theme,
@@ -2161,8 +2421,8 @@ class BrowserApp:
             "bookmarks": self.bookmarks,
             "shortcuts": self.shortcuts,
             "history": self.history,
-            "cookies": self.cookies,
         }
+        data.update(self.cookie_jar._state_data())
         try:
             with open(STATE_PATH, "w", encoding="utf-8") as file_obj:
                 json.dump(data, file_obj, indent=2)
