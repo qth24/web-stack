@@ -12,3 +12,23 @@ venv/
 browser_state.json
 *.mdc
 key.pem
+
+# Browser state (generated at runtime)
+cookies.json
+phishing_rules.json
+webengine-profile/
+webengine-cache/
+http_cache/
+
+# HTTP server TLS certs (generated at startup)
+cert.pem
+*.pem
+
+# Credentials / secrets
+*-key.json
+google-key*.json
+*credentials*.json
+
+# OS junk
+.DS_Store
+Thumbs.db

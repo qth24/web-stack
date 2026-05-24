@@ -85,6 +85,13 @@ from browser.core.config import (
     PHISHING_BLOCK_THRESHOLD,
     PHISHING_RULES_PATH,
     PHISHING_SUSPICIOUS_THRESHOLD,
+    AI_MAX_OUTPUT_TOKENS,
+    AI_MODEL,
+    AI_PAGE_TEXT_MAX_CHARS,
+    AI_SELECTION_MAX_CHARS,
+    AI_STREAM,
+    AI_TEMPERATURE,
+    ENABLE_AI_ASSISTANT,
     SEARCH_URL,
     STATE_DIR,
     STATE_PATH,
@@ -107,6 +114,16 @@ from browser.core.phishing import (
     load_user_rules_raw,
     save_user_rules,
     merge_assessments,
+)
+from browser.core.assistant import (
+    AssistantConfig,
+    AssistantMessage,
+    AssistantSessionState,
+    GeminiAssistantClient,
+    build_context,
+    build_custom_prompt,
+    build_preset_prompt,
+    transcript_to_gemini_contents,
 )
 
 
@@ -275,6 +292,18 @@ class BrowserApp:
         self._phishing_enabled = ENABLE_PHISHING_DETECTION
         self._phishing_reputation = load_reputation(PHISHING_RULES_PATH) if self._phishing_enabled else None
         self._phishing_allowlist: set[str] = set()
+
+        self._ai_config = AssistantConfig(
+            enabled=ENABLE_AI_ASSISTANT,
+            model=AI_MODEL,
+            stream=AI_STREAM,
+            temperature=AI_TEMPERATURE,
+            max_output_tokens=AI_MAX_OUTPUT_TOKENS,
+            selection_max_chars=AI_SELECTION_MAX_CHARS,
+            page_text_max_chars=AI_PAGE_TEXT_MAX_CHARS,
+        )
+        self._ai_client = GeminiAssistantClient(self._ai_config) if ENABLE_AI_ASSISTANT else None
+        self._assistant_sessions: dict[int, AssistantSessionState] = {}
 
         self.dns_client = self._make_dns_client()
         self.http_client = HTTPClient()
@@ -447,6 +476,8 @@ class BrowserApp:
         self.download_action = QAction(self._theme_icon("download"), "Download", self.window)
         self.devtools_action = QAction(self._theme_icon("applications-development"), "DevTools", self.window)
         self.settings_action = QAction("Settings", self.window)
+        self.ai_assistant_action = QAction(self._theme_icon("dialog-question"), "AI Assistant", self.window)
+        self.ai_assistant_action.setCheckable(True)
         self.go_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), "Go", self.window)
 
         for action, tip in [
@@ -497,6 +528,8 @@ class BrowserApp:
         self.menu.addSeparator()
         self.menu.addAction(self.devtools_action)
         self.menu.addAction(self.settings_action)
+        self.menu.addSeparator()
+        self.menu.addAction(self.ai_assistant_action)
         self.menu_button.setMenu(self.menu)
         self.toolbar.addWidget(self.menu_button)
 
@@ -567,6 +600,87 @@ class BrowserApp:
         main_splitter.setSizes([590, 190])
         self.devtools_frame.hide()
 
+        self._assistant_sidebar = QFrame()
+        self._assistant_sidebar.setObjectName("assistantSidebar")
+        self._assistant_sidebar.setMinimumWidth(260)
+        self._assistant_sidebar.setMaximumWidth(500)
+        assistant_layout = QVBoxLayout(self._assistant_sidebar)
+        assistant_layout.setContentsMargins(0, 0, 0, 0)
+        assistant_layout.setSpacing(0)
+
+        asst_header = QHBoxLayout()
+        asst_header.setContentsMargins(12, 10, 12, 6)
+        asst_label = QLabel("AI Assistant")
+        asst_label.setObjectName("assistantLabel")
+        asst_header.addWidget(asst_label)
+        asst_header.addStretch(1)
+        self.open_asst_tab_btn = QPushButton("Open Tab")
+        self.open_asst_tab_btn.setFixedHeight(28)
+        self.open_asst_tab_btn.clicked.connect(self._open_assistant_tab)
+        asst_header.addWidget(self.open_asst_tab_btn)
+        self.close_asst_btn = QPushButton("×")
+        self.close_asst_btn.setObjectName("devtoolsCloseButton")
+        self.close_asst_btn.setFixedWidth(34)
+        self.close_asst_btn.clicked.connect(lambda: self._toggle_assistant(False))
+        asst_header.addWidget(self.close_asst_btn)
+        assistant_layout.addLayout(asst_header)
+
+        self.asst_context_chips = QLabel("")
+        self.asst_context_chips.setWordWrap(True)
+        self.asst_context_chips.setObjectName("assistantChips")
+        self.asst_context_chips.setTextFormat(Qt.TextFormat.RichText)
+        self.asst_context_chips.setMinimumHeight(0)
+        self.asst_context_chips.hide()
+        assistant_layout.addWidget(self.asst_context_chips)
+
+        self.asst_transcript = QTextEdit()
+        self.asst_transcript.setReadOnly(True)
+        self.asst_transcript.setObjectName("assistantTranscript")
+        assistant_layout.addWidget(self.asst_transcript, 1)
+
+        self.asst_streaming_label = QLabel("")
+        self.asst_streaming_label.setWordWrap(True)
+        self.asst_streaming_label.setObjectName("assistantStreaming")
+        self.asst_streaming_label.hide()
+        assistant_layout.addWidget(self.asst_streaming_label)
+
+        qa_row = QHBoxLayout()
+        qa_row.setContentsMargins(10, 6, 10, 10)
+        qa_row.setSpacing(6)
+        self.asst_quick_btn = QPushButton("Summarize")
+        self.asst_quick_btn.clicked.connect(lambda: self._asst_preset("summarize"))
+        qa_row.addWidget(self.asst_quick_btn)
+        self.asst_clear_btn = QPushButton("Clear")
+        self.asst_clear_btn.clicked.connect(self._asst_clear)
+        qa_row.addWidget(self.asst_clear_btn)
+        assistant_layout.addLayout(qa_row)
+
+        composer_row = QHBoxLayout()
+        composer_row.setContentsMargins(10, 0, 10, 12)
+        composer_row.setSpacing(6)
+        self.asst_composer = QLineEdit()
+        self.asst_composer.setPlaceholderText("Ask about this page...")
+        self.asst_composer.setObjectName("assistantComposer")
+        self.asst_composer.returnPressed.connect(self._asst_send)
+        composer_row.addWidget(self.asst_composer, 1)
+        self.asst_send_btn = QPushButton("Send")
+        self.asst_send_btn.clicked.connect(self._asst_send)
+        composer_row.addWidget(self.asst_send_btn)
+        self.asst_stop_btn = QPushButton("Stop")
+        self.asst_stop_btn.hide()
+        self.asst_stop_btn.clicked.connect(self._asst_stop)
+        composer_row.addWidget(self.asst_stop_btn)
+        assistant_layout.addLayout(composer_row)
+
+        self._assistant_sidebar.hide()
+
+        hsplitter = QSplitter(Qt.Orientation.Horizontal)
+        hsplitter.setHandleWidth(10)
+        hsplitter.addWidget(main_splitter)
+        hsplitter.addWidget(self._assistant_sidebar)
+        hsplitter.setSizes([940, 280])
+        root.addWidget(hsplitter, 1)
+
         self.status_bar = QStatusBar()
         self.window.setStatusBar(self.status_bar)
         self._refresh_side_lists()
@@ -602,6 +716,7 @@ class BrowserApp:
         self.devtools_action.triggered.connect(self._toggle_devtools)
         self.close_devtools_btn.clicked.connect(lambda: self.devtools_frame.hide())
         self.settings_action.triggered.connect(self._open_settings_page)
+        self.ai_assistant_action.triggered.connect(lambda checked: self._toggle_assistant(checked))
         self.tabs.currentChanged.connect(lambda _: self._sync_toolbar())
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.network_table.itemSelectionChanged.connect(self._show_selected_event)
@@ -811,6 +926,42 @@ class BrowserApp:
                 background: {c['panel']};
                 border-top: 1px solid {c['border']};
                 border-radius: 0;
+            }}
+            QFrame#assistantSidebar {{
+                background: {c['panel']};
+                border: 1px solid {c['border']};
+                border-radius: 18px;
+            }}
+            QLabel#assistantLabel {{
+                font-size: 12px;
+                font-weight: 700;
+                letter-spacing: 0.14em;
+                text-transform: uppercase;
+                color: {c['muted']};
+            }}
+            QLabel#assistantChips {{
+                color: {c['muted_soft']};
+                font-size: 12px;
+                padding: 4px 12px;
+                background: {c['panel2']};
+                border-bottom: 1px solid {c['border2']};
+            }}
+            QLabel#assistantStreaming {{
+                color: {c['text']};
+                font-size: 13px;
+                padding: 8px 12px;
+                background: {c['panel2']};
+                border-top: 1px solid {c['border2']};
+            }}
+            QTextEdit#assistantTranscript {{
+                border: 0;
+                border-radius: 0;
+                font-size: 13px;
+                padding: 8px 12px;
+            }}
+            QLineEdit#assistantComposer {{
+                font-size: 13px;
+                padding: 8px 12px;
             }}
             QTableWidget, QListWidget, QTextEdit {{
                 color: {c['text']};
@@ -1998,9 +2149,330 @@ class BrowserApp:
             tab.view.page().printToPdf(path)
             self._set_status(f"Printed to {path}")
 
+    def _toggle_assistant(self, show: bool):
+        if show:
+            self._ai_assistant_init_check()
+            self._assistant_sidebar.show()
+            self.ai_assistant_action.setChecked(True)
+            self._render_assistant_sidebar()
+        else:
+            self._assistant_sidebar.hide()
+            self.ai_assistant_action.setChecked(False)
+
+    def _ai_assistant_init_check(self):
+        if self._ai_client is None:
+            return
+        if not self._ai_client.is_ready:
+            err = self._ai_client.setup_error or "AI assistant is not available"
+            session = self._get_assistant_session()
+            session.last_error = err
+
+    def _get_assistant_session(self) -> AssistantSessionState:
+        tab = self._current_tab()
+        if tab is None:
+            sid = session.session_id if 'session' in dir() else id(0)
+            if sid not in self._assistant_sessions:
+                self._assistant_sessions[sid] = AssistantSessionState()
+            return self._assistant_sessions[sid]
+        sid = id(tab)
+        if sid not in self._assistant_sessions:
+            self._assistant_sessions[sid] = AssistantSessionState()
+        return self._assistant_sessions[sid]
+
+    def _capture_page_context(self, session: AssistantSessionState):
+        tab = self._current_tab()
+        if tab is None:
+            return
+        if tab.current_url and not tab.current_url.startswith("internal:"):
+            session.attached_url = tab.current_url
+        session.attached_title = tab.title or ""
+        if tab.last_event and tab.last_event.host:
+            session.attached_title = session.attached_title or tab.last_event.host
+
+        if tab.last_response and tab.last_response.body:
+            text = tab.last_response.body
+            from html.parser import HTMLParser
+            class _Stripper(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.text = []
+                def handle_data(self, data):
+                    self.text.append(data)
+            try:
+                s = _Stripper()
+                s.feed(text)
+                plain = " ".join(t for t in s.text if t.strip())
+                if plain.strip():
+                    session.attached_page_text = plain.strip()
+            except Exception:
+                pass
+
+    def _render_assistant_sidebar(self):
+        session = self._get_assistant_session()
+        err = session.last_error
+        if self._ai_client and not self._ai_client.is_ready:
+            err = self._ai_client.setup_error or err
+
+        if err and not session.messages:
+            c = self._theme_colors()
+            html_body = (
+                "<div style='padding:24px;text-align:center'>"
+                f"<p style='font-size:32px;margin:0 0 12px'>&#129302;</p>"
+                f"<h3 style='margin:0 0 8px;color:{c['text']}'>AI Assistant Setup</h3>"
+                f"<p style='color:{c['muted']};font-size:13px'>{html.escape(err)}</p>"
+                "</div>"
+            )
+            self.asst_transcript.setHtml(html_body)
+            self.asst_streaming_label.hide()
+            self.asst_transcript.show()
+            return
+
+        c = self._theme_colors()
+        lines = []
+        for msg in session.messages:
+            if msg.role == "user":
+                lines.append(
+                    f"<div style='margin:6px 0;text-align:right'>"
+                    f"<span style='background:{c['accent_soft']};color:{c['accent']};padding:6px 12px;"
+                    f"border-radius:14px;font-size:13px;display:inline-block;max-width:85%'>"
+                    f"{html.escape(msg.content)}</span></div>"
+                )
+            else:
+                lines.append(
+                    f"<div style='margin:6px 0;text-align:left'>"
+                    f"<span style='background:{c['panel2']};color:{c['text']};padding:6px 12px;"
+                    f"border-radius:14px;font-size:13px;display:inline-block;max-width:85%'>"
+                    f"{msg.content}</span></div>"
+                )
+        transcript_html = "".join(lines) or f"<p style='color:{c['muted_soft']};text-align:center;padding:20px'>Ask a question about this page.</p>"
+
+        if session.has_context:
+            chip_parts = []
+            if session.attached_url:
+                chip_parts.append(f"<span style='background:{c['accent_soft']};padding:2px 8px;border-radius:8px;margin:2px'>{html.escape(session.attached_url[:50])}</span>")
+            if session.attached_selection:
+                chip_parts.append("<span style='background:{};padding:2px 8px;border-radius:8px;margin:2px'>selection</span>".format(c['accent_soft']))
+            if session.attached_page_text:
+                chip_parts.append("<span style='background:{};padding:2px 8px;border-radius:8px;margin:2px'>page text</span>".format(c['accent_soft']))
+            self.asst_context_chips.setText("".join(chip_parts))
+            self.asst_context_chips.show()
+        else:
+            self.asst_context_chips.hide()
+
+        self.asst_transcript.setHtml(
+            f"<div style='font-family:system-ui;font-size:13px;line-height:1.5'>{transcript_html}</div>"
+        )
+        self.asst_transcript.verticalScrollBar().setValue(
+            self.asst_transcript.verticalScrollBar().maximum()
+        )
+
+        streaming = session.streaming_text()
+        if session.in_flight and streaming:
+            self.asst_streaming_label.setText(streaming)
+            self.asst_streaming_label.show()
+        elif session.in_flight:
+            self.asst_streaming_label.setText("Thinking...")
+            self.asst_streaming_label.show()
+        else:
+            self.asst_streaming_label.hide()
+
+        if session.in_flight:
+            self.asst_send_btn.hide()
+            self.asst_stop_btn.show()
+        else:
+            self.asst_send_btn.show()
+            self.asst_stop_btn.hide()
+
+    def _asst_preset(self, preset: str):
+        session = self._get_assistant_session()
+        self._capture_page_context(session)
+        prompt = build_preset_prompt(preset, session, self._ai_config)
+        if prompt is None:
+            session.last_error = "No page content available for {}".format(preset)
+            self._render_assistant_sidebar()
+            return
+        session.last_error = ""
+        session.messages.append(AssistantMessage(role="user", content=prompt))
+        self._render_assistant_sidebar()
+        self._asst_start_stream()
+
+    def _asst_send(self):
+        text = self.asst_composer.text().strip()
+        if not text:
+            return
+        self.asst_composer.clear()
+        session = self._get_assistant_session()
+        self._capture_page_context(session)
+        session.last_error = ""
+        prompt = build_custom_prompt(text, session, self._ai_config)
+        session.messages.append(AssistantMessage(role="user", content=text))
+        self._render_assistant_sidebar()
+        self._asst_start_stream()
+
+    def _asst_start_stream(self):
+        session = self._get_assistant_session()
+        if session.in_flight:
+            return
+        if self._ai_client is None or not self._ai_client.is_ready:
+            session.last_error = self._ai_client.setup_error if self._ai_client else "AI assistant is not available"
+            self._render_assistant_sidebar()
+            return
+
+        session.cancelled = False
+        session.in_flight = True
+        session.pending_accumulated = ""
+        session.last_error = ""
+        self._render_assistant_sidebar()
+
+        poll = QTimer()
+        poll.timeout.connect(lambda: self._asst_poll(session, poll))
+        poll.start(200)
+        self._asst_worker_start(session)
+
+    def _asst_poll(self, session: AssistantSessionState, poll_timer: QTimer):
+        if not session.in_flight:
+            poll_timer.stop()
+            poll_timer.deleteLater()
+            self._render_assistant_sidebar()
+
+    def _asst_stop(self):
+        session = self._get_assistant_session()
+        session.cancelled = True
+
+    def _asst_clear(self):
+        session = self._get_assistant_session()
+        session.cancelled = True
+        session.messages.clear()
+        session.attached_url = ""
+        session.attached_title = ""
+        session.attached_page_text = ""
+        session.attached_selection = ""
+        session.last_error = ""
+        self._render_assistant_sidebar()
+
+    def _asst_worker_start(self, session: AssistantSessionState):
+        from threading import Thread
+        def _run():
+            accumulated = ""
+            try:
+                for chunk_text in self._ai_client.generate_stream(session):
+                    if session.cancelled:
+                        break
+                    accumulated += chunk_text
+                if not session.cancelled and accumulated:
+                    session.messages.append(AssistantMessage(role="assistant", content=accumulated))
+            except Exception as e:
+                if not session.cancelled:
+                    session.last_error = str(e)
+            finally:
+                session.in_flight = False
+                session.pending_accumulated = ""
+        Thread(target=_run, daemon=True).start()
+
+    def _asst_open_for_action(self, preset: str = "", selection: str = ""):
+        self._toggle_assistant(True)
+        session = self._get_assistant_session()
+        if selection:
+            session.attached_selection = selection
+        if preset:
+            self._asst_preset(preset)
+        else:
+            self._capture_page_context(session)
+            self._render_assistant_sidebar()
+
+    def _open_assistant_tab(self):
+        session = self._get_assistant_session()
+        tab = self._current_tab()
+        source_tab_id = str(id(tab)) if tab else ""
+        url = "internal:assistant?source_tab={}&session_id={}".format(source_tab_id, session.session_id)
+        self._new_tab("", False)
+        assistant_tab = self._current_tab()
+        if assistant_tab:
+            assistant_tab.current_url = url
+            assistant_tab.title = "AI Assistant"
+            self._update_tab_label(assistant_tab)
+            self._show_assistant_tab(assistant_tab, source_tab_id)
+
+    def _show_assistant_tab(self, tab: BrowserTab, source_tab_id: str = ""):
+        from urllib.parse import parse_qs
+        url = tab.current_url
+        params = parse_qs(urlparse(url).query)
+        sid = params.get("source_tab", [source_tab_id])[0]
+
+        source_session = None
+        for tab_id, session in self._assistant_sessions.items():
+            if str(tab_id) == sid:
+                source_session = session
+                break
+        if source_session is None:
+            source_session = self._get_assistant_session()
+
+        c = self._theme_colors()
+        msg_parts = []
+        for m in source_session.messages:
+            align = "right" if m.role == "user" else "left"
+            bg = c['accent_soft'] if m.role == "user" else c['panel2']
+            fg = c['accent'] if m.role == "user" else c['text']
+            txt = html.escape(m.content) if m.role == "user" else m.content
+            msg_parts.append(
+                "<div style='margin:6px 0;text-align:{}'>"
+                "<span style='background:{};color:{};padding:6px 12px;"
+                "border-radius:14px;font-size:13px;display:inline-block;max-width:85%'>"
+                "{}</span></div>"
+                .format(align, bg, fg, txt)
+            )
+        msgs = "".join(msg_parts) or (
+            "<p style='color:{};text-align:center;padding:40px'>"
+            "No conversation yet. Open the assistant sidebar to start.</p>"
+        ).format(c['muted_soft'])
+
+        body = (
+            "<main class='page-shell'>"
+            + self._page_header("Assistant", "AI Assistant", "Page-aware conversations linked to your browsing session.")
+            + "<section class='surface'><div style='font-family:system-ui;font-size:13px;line-height:1.5'>"
+            + msgs
+            + "</div></section></main>"
+        )
+        tab.view.setHtml(self._page_html("AI Assistant", body))
+
     def _show_context_menu(self, view: QWebEngineView, pos):
         tab = view.property("browser_tab")
         menu = QMenu(view)
+
+        selection_text = ""
+        page = view.page()
+        try:
+            selection_text = page.selectedText().strip()
+        except Exception:
+            pass
+
+        if selection_text:
+            menu.addAction("Summarize Selection").triggered.connect(
+                lambda: self._asst_open_for_action("summarize", selection_text)
+            )
+            menu.addAction("Explain Selection").triggered.connect(
+                lambda: self._asst_open_for_action("explain", selection_text)
+            )
+            menu.addAction("What Is This?").triggered.connect(
+                lambda: self._asst_open_for_action("what-is-this", selection_text)
+            )
+            ai_ask = menu.addAction("Ask Assistant...")
+            ai_ask.triggered.connect(
+                lambda: self._asst_open_for_action("", selection_text)
+            )
+            menu.addSeparator()
+
+        menu.addAction("Summarize Page").triggered.connect(
+            lambda: self._asst_open_for_action("summarize")
+        )
+        menu.addAction("What Is This Page?").triggered.connect(
+            lambda: self._asst_open_for_action("what-is-this")
+        )
+        menu.addAction("Ask About This Page...").triggered.connect(
+            lambda: self._asst_open_for_action("")
+        )
+        menu.addSeparator()
+
         inspect_action = menu.addAction("Inspect HTML")
         reload_action = menu.addAction("Reload")
         chosen = menu.exec(view.mapToGlobal(pos))
@@ -2177,6 +2649,10 @@ class BrowserApp:
                 save_user_rules(PHISHING_RULES_PATH, rules)
                 self._phishing_reputation = load_reputation(PHISHING_RULES_PATH)
             self._show_settings_tab()
+            return
+        if action == "assistant":
+            source_tab_id = values.get("source_tab", [""])[0]
+            self._show_assistant_tab(tab, source_tab_id)
             return
 
     def _mark_internal_tab(
