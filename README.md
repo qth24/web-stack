@@ -191,23 +191,6 @@ Tests cover:
 
 Uses test ports `5337` (DNS) and `8001` (HTTP) to avoid conflicts with dev servers.
 
-## Demo Script
-
-Run the interactive demo script that starts real servers and tests them via UDP/curl:
-
-```bash
-bash demo.sh
-```
-
-The script:
-1. Starts DNS server on `127.0.0.1:5337`
-2. Starts HTTP server on `127.0.0.1:8001`
-3. Tests DNS resolution with a UDP JSON client
-4. Tests HTTP endpoints with `curl`
-5. Tests rate limiting (12 rapid DNS queries)
-6. Cleans up background processes
-7. Reports pass/fail summary
-
 ## Failure Paths
 
 These scenarios demonstrate error handling in the stack:
