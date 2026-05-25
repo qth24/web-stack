@@ -8,7 +8,7 @@ import time
 import base64
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, quote_plus, unquote_plus, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
@@ -58,6 +58,7 @@ try:
         QTabWidget,
         QTableWidget,
         QTableWidgetItem,
+        QTextBrowser,
         QTextEdit,
         QToolBar,
         QVBoxLayout,
@@ -128,12 +129,12 @@ from browser.core.phishing import (
 from browser.core.assistant import (
     AssistantConfig,
     AssistantMessage,
+    AssistantRequest,
     AssistantSessionState,
     GeminiAssistantClient,
-    build_context,
-    build_custom_prompt,
-    build_preset_prompt,
-    transcript_to_gemini_contents,
+    build_custom_request,
+    build_preset_request,
+    render_assistant_message_html,
 )
 
 
@@ -753,13 +754,15 @@ class BrowserApp:
         self.asst_context_chips.hide()
         assistant_layout.addWidget(self.asst_context_chips)
 
-        self.asst_transcript = QTextEdit()
-        self.asst_transcript.setReadOnly(True)
+        self.asst_transcript = QTextBrowser()
+        self.asst_transcript.setOpenLinks(False)
+        self.asst_transcript.anchorClicked.connect(lambda url: self._navigate(url.toString()))
         self.asst_transcript.setObjectName("assistantTranscript")
         assistant_layout.addWidget(self.asst_transcript, 1)
 
         self.asst_streaming_label = QLabel("")
         self.asst_streaming_label.setWordWrap(True)
+        self.asst_streaming_label.setTextFormat(Qt.TextFormat.PlainText)
         self.asst_streaming_label.setObjectName("assistantStreaming")
         self.asst_streaming_label.hide()
         assistant_layout.addWidget(self.asst_streaming_label)
@@ -779,7 +782,7 @@ class BrowserApp:
         composer_row.setContentsMargins(10, 0, 10, 12)
         composer_row.setSpacing(6)
         self.asst_composer = QLineEdit()
-        self.asst_composer.setPlaceholderText("Ask about this page...")
+        self.asst_composer.setPlaceholderText("Ask about this page or anything else...")
         self.asst_composer.setObjectName("assistantComposer")
         self.asst_composer.returnPressed.connect(self._asst_send)
         composer_row.addWidget(self.asst_composer, 1)
@@ -2501,9 +2504,48 @@ class BrowserApp:
             self._assistant_sessions[sid] = AssistantSessionState()
         return self._assistant_sessions[sid]
 
-    def _capture_page_context(self, session: AssistantSessionState):
+    @staticmethod
+    def _strip_html_text(source: str) -> str:
+        if not source:
+            return ""
+        from html.parser import HTMLParser
+
+        class _Stripper(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.text: list[str] = []
+
+            def handle_data(self, data):
+                self.text.append(data)
+
+        try:
+            stripper = _Stripper()
+            stripper.feed(source)
+            stripper.close()
+        except Exception:
+            return ""
+
+        return " ".join(chunk for chunk in stripper.text if chunk.strip()).strip()
+
+    def _fallback_page_text(self, tab: BrowserTab) -> str:
+        if not tab.last_response or not tab.last_response.body:
+            return ""
+        return self._strip_html_text(tab.last_response.body)
+
+    def _capture_page_context(
+        self,
+        session: AssistantSessionState,
+        on_ready: Callable[[], None],
+        preferred_selection: str = "",
+    ):
         tab = self._current_tab()
+        session.attached_url = ""
+        session.attached_title = ""
+        session.attached_page_text = ""
+        session.attached_selection = preferred_selection.strip()
+
         if tab is None:
+            on_ready()
             return
         if tab.current_url and not tab.current_url.startswith("internal:"):
             session.attached_url = tab.current_url
@@ -2511,23 +2553,35 @@ class BrowserApp:
         if tab.last_event and tab.last_event.host:
             session.attached_title = session.attached_title or tab.last_event.host
 
-        if tab.last_response and tab.last_response.body:
-            text = tab.last_response.body
-            from html.parser import HTMLParser
-            class _Stripper(HTMLParser):
-                def __init__(self):
-                    super().__init__()
-                    self.text = []
-                def handle_data(self, data):
-                    self.text.append(data)
+        page = tab.view.page()
+        if not session.attached_selection and page is not None:
             try:
-                s = _Stripper()
-                s.feed(text)
-                plain = " ".join(t for t in s.text if t.strip())
-                if plain.strip():
-                    session.attached_page_text = plain.strip()
+                session.attached_selection = page.selectedText().strip()
             except Exception:
-                pass
+                session.attached_selection = ""
+
+        if page is None:
+            session.attached_page_text = self._fallback_page_text(tab)
+            on_ready()
+            return
+
+        def _finish_capture(raw_text: str):
+            page_text = (raw_text or "").strip()
+            session.attached_page_text = page_text or self._fallback_page_text(tab)
+            on_ready()
+
+        try:
+            page.toPlainText(_finish_capture)
+            return
+        except Exception:
+            pass
+
+        try:
+            page.toHtml(lambda html_text: _finish_capture(self._strip_html_text(html_text)))
+            return
+        except Exception:
+            session.attached_page_text = self._fallback_page_text(tab)
+            on_ready()
 
     def _render_assistant_sidebar(self):
         session = self._get_assistant_session()
@@ -2552,21 +2606,12 @@ class BrowserApp:
         c = self._theme_colors()
         lines = []
         for msg in session.messages:
-            if msg.role == "user":
-                lines.append(
-                    f"<div style='margin:6px 0;text-align:right'>"
-                    f"<span style='background:{c['accent_soft']};color:{c['accent']};padding:6px 12px;"
-                    f"border-radius:14px;font-size:13px;display:inline-block;max-width:85%'>"
-                    f"{html.escape(msg.content)}</span></div>"
-                )
-            else:
-                lines.append(
-                    f"<div style='margin:6px 0;text-align:left'>"
-                    f"<span style='background:{c['panel2']};color:{c['text']};padding:6px 12px;"
-                    f"border-radius:14px;font-size:13px;display:inline-block;max-width:85%'>"
-                    f"{msg.content}</span></div>"
-                )
-        transcript_html = "".join(lines) or f"<p style='color:{c['muted_soft']};text-align:center;padding:20px'>Ask a question about this page.</p>"
+            lines.append(self._assistant_message_bubble_html(msg, c))
+        transcript_html = "".join(lines) or (
+            f"<p style='color:{c['muted_soft']};text-align:center;padding:20px'>"
+            "Ask about this page or anything else."
+            "</p>"
+        )
 
         if session.has_context:
             chip_parts = []
@@ -2605,34 +2650,67 @@ class BrowserApp:
             self.asst_send_btn.show()
             self.asst_stop_btn.hide()
 
-    def _asst_preset(self, preset: str):
+    def _asst_preset(self, preset: str, selection: str = ""):
         session = self._get_assistant_session()
-        self._capture_page_context(session)
-        prompt = build_preset_prompt(preset, session, self._ai_config)
-        if prompt is None:
-            session.last_error = "No page content available for {}".format(preset)
-            self._render_assistant_sidebar()
+        if session.in_flight:
             return
-        session.last_error = ""
-        session.messages.append(AssistantMessage(role="user", content=prompt))
-        self._render_assistant_sidebar()
-        self._asst_start_stream()
+
+        def _send_preset():
+            request = build_preset_request(preset, session, self._ai_config)
+            if request is None:
+                session.last_error = "No page content available for this request."
+                self._render_assistant_sidebar()
+                return
+            session.last_error = ""
+            session.messages.append(
+                AssistantMessage(
+                    role="user",
+                    content=request.display_content,
+                    model_content=request.model_content,
+                )
+            )
+            self._render_assistant_sidebar()
+            self._asst_start_stream(session, request)
+
+        self._capture_page_context(session, _send_preset, preferred_selection=selection)
 
     def _asst_send(self):
         text = self.asst_composer.text().strip()
         if not text:
             return
+        session = self._get_assistant_session()
+        if session.in_flight:
+            return
         self.asst_composer.clear()
-        session = self._get_assistant_session()
-        self._capture_page_context(session)
-        session.last_error = ""
-        prompt = build_custom_prompt(text, session, self._ai_config)
-        session.messages.append(AssistantMessage(role="user", content=text))
-        self._render_assistant_sidebar()
-        self._asst_start_stream()
 
-    def _asst_start_stream(self):
-        session = self._get_assistant_session()
+        def _send_custom():
+            session.last_error = ""
+            request = build_custom_request(text, session, self._ai_config)
+            session.messages.append(
+                AssistantMessage(
+                    role="user",
+                    content=request.display_content,
+                    model_content=request.model_content,
+                )
+            )
+            self._render_assistant_sidebar()
+            self._asst_start_stream(session, request)
+
+        self._capture_page_context(session, _send_custom)
+
+    def _asst_start_stream(
+        self,
+        session: Optional[AssistantSessionState] = None,
+        request: Optional[AssistantRequest] = None,
+    ):
+        session = session or self._get_assistant_session()
+        request = request or AssistantRequest(
+            display_content="",
+            model_content="",
+            mode="page-summary",
+            use_grounding=False,
+            stream=self._ai_config.stream,
+        )
         if session.in_flight:
             return
         if self._ai_client is None or not self._ai_client.is_ready:
@@ -2649,7 +2727,7 @@ class BrowserApp:
         poll = QTimer()
         poll.timeout.connect(lambda: self._asst_poll(session, poll))
         poll.start(200)
-        self._asst_worker_start(session)
+        self._asst_worker_start(session, request)
 
     def _asst_poll(self, session: AssistantSessionState, poll_timer: QTimer):
         if not session.in_flight:
@@ -2672,35 +2750,73 @@ class BrowserApp:
         session.last_error = ""
         self._render_assistant_sidebar()
 
-    def _asst_worker_start(self, session: AssistantSessionState):
+    def _asst_worker_start(self, session: AssistantSessionState, request: AssistantRequest):
         from threading import Thread
+
         def _run():
             accumulated = ""
             try:
-                for chunk_text in self._ai_client.generate_stream(session):
-                    if session.cancelled:
-                        break
-                    accumulated += chunk_text
-                if not session.cancelled and accumulated:
-                    session.messages.append(AssistantMessage(role="assistant", content=accumulated))
+                if request.stream:
+                    for chunk_text in self._ai_client.generate_stream(session, request):
+                        if session.cancelled:
+                            break
+                        accumulated += chunk_text
+                        session.pending_accumulated = accumulated
+                    if not session.cancelled and accumulated:
+                        session.messages.append(
+                            AssistantMessage(
+                                role="assistant",
+                                content=accumulated,
+                                rendered_html=render_assistant_message_html(accumulated),
+                            )
+                        )
+                else:
+                    response = self._ai_client.generate_response(session, request)
+                    if not session.cancelled and response.text:
+                        session.messages.append(
+                            AssistantMessage(
+                                role="assistant",
+                                content=response.text,
+                                rendered_html=response.rendered_html or render_assistant_message_html(response.text),
+                            )
+                        )
             except Exception as e:
                 if not session.cancelled:
                     session.last_error = str(e)
             finally:
                 session.in_flight = False
                 session.pending_accumulated = ""
+
         Thread(target=_run, daemon=True).start()
+
+    def _assistant_message_bubble_html(self, msg: AssistantMessage, colors: dict[str, str]) -> str:
+        if msg.role == "user":
+            return (
+                f"<div style='margin:6px 0;text-align:right'>"
+                f"<div style='background:{colors['accent_soft']};color:{colors['accent']};padding:6px 12px;"
+                f"border-radius:14px;font-size:13px;display:inline-block;max-width:85%;text-align:left'>"
+                f"{html.escape(msg.content)}</div></div>"
+            )
+
+        body_html = msg.rendered_html or render_assistant_message_html(msg.content)
+        return (
+            f"<div style='margin:6px 0;text-align:left'>"
+            f"<div style='background:{colors['panel2']};color:{colors['text']};padding:8px 12px;"
+            f"border-radius:14px;font-size:13px;display:inline-block;max-width:85%;text-align:left'>"
+            f"{body_html}</div></div>"
+        )
 
     def _asst_open_for_action(self, preset: str = "", selection: str = ""):
         self._toggle_assistant(True)
         session = self._get_assistant_session()
-        if selection:
-            session.attached_selection = selection
         if preset:
-            self._asst_preset(preset)
+            self._asst_preset(preset, selection)
         else:
-            self._capture_page_context(session)
-            self._render_assistant_sidebar()
+            self._capture_page_context(
+                session,
+                self._render_assistant_sidebar,
+                preferred_selection=selection,
+            )
 
     def _open_assistant_tab(self):
         session = self._get_assistant_session()
@@ -2732,17 +2848,7 @@ class BrowserApp:
         c = self._theme_colors()
         msg_parts = []
         for m in source_session.messages:
-            align = "right" if m.role == "user" else "left"
-            bg = c['accent_soft'] if m.role == "user" else c['panel2']
-            fg = c['accent'] if m.role == "user" else c['text']
-            txt = html.escape(m.content) if m.role == "user" else m.content
-            msg_parts.append(
-                "<div style='margin:6px 0;text-align:{}'>"
-                "<span style='background:{};color:{};padding:6px 12px;"
-                "border-radius:14px;font-size:13px;display:inline-block;max-width:85%'>"
-                "{}</span></div>"
-                .format(align, bg, fg, txt)
-            )
+            msg_parts.append(self._assistant_message_bubble_html(m, c))
         msgs = "".join(msg_parts) or (
             "<p style='color:{};text-align:center;padding:40px'>"
             "No conversation yet. Open the assistant sidebar to start.</p>"
@@ -2750,7 +2856,7 @@ class BrowserApp:
 
         body = (
             "<main class='page-shell'>"
-            + self._page_header("Assistant", "AI Assistant", "Page-aware conversations linked to your browsing session.")
+            + self._page_header("Assistant", "AI Assistant", "Ask about the current page or anything else.")
             + "<section class='surface'><div style='font-family:system-ui;font-size:13px;line-height:1.5'>"
             + msgs
             + "</div></section></main>"
