@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 try:
     from PySide6.QtCore import QSize, Qt, QTimer, QUrl
     from PySide6.QtGui import QAction, QColor, QIcon
+    from PySide6.QtGui import QPixmap
     try:
         from PySide6.QtWebEngineCore import QWebEnginePage
     except ImportError:
@@ -52,7 +53,9 @@ try:
         QStyle,
         QSpinBox,
         QSplitter,
+        QStackedWidget,
         QStatusBar,
+        QTabBar,
         QTabWidget,
         QTableWidget,
         QTableWidgetItem,
@@ -82,6 +85,13 @@ from browser.core.config import (
     HTTP_CACHE_MAX_MB,
     HTTP_DEFAULT_PORT,
     HTTPS_DEFAULT_PORT,
+    ENABLE_VPN,
+    VPN_HOST,
+    VPN_PORT,
+    VPN_TOKEN,
+    VPN_TIMEOUT,
+    VPN_MODE,
+    VPN_DOMAINS,
     PHISHING_BLOCK_THRESHOLD,
     PHISHING_RULES_PATH,
     PHISHING_SUSPICIOUS_THRESHOLD,
@@ -102,6 +112,7 @@ from browser.core.config import (
 from browser.core.dns_client import DNSClient, DNSError
 from browser.core.host_routing import is_ipv4_address, should_use_custom_dns
 from browser.core.http_client import HTTPClient, HTTPError, HTTPResponse
+from browser.core.vpn_client import VPNClient, VPNError
 from browser.core.url_parser import URLParseError, parse_url
 from browser.core.cookies import CookieJar
 from browser.core.http_cache import HTTPCache
@@ -136,6 +147,13 @@ class BrowserSettings:
     https_default_port: int = HTTPS_DEFAULT_PORT
     enable_dns_cache: bool = ENABLE_DNS_CACHE
     enable_http_cache: bool = ENABLE_HTTP_CACHE
+    enable_vpn: bool = ENABLE_VPN
+    vpn_host: str = VPN_HOST
+    vpn_port: int = VPN_PORT
+    vpn_token: str = VPN_TOKEN
+    vpn_timeout: float = VPN_TIMEOUT
+    vpn_mode: str = VPN_MODE if VPN_MODE in {"all", "domains"} else "all"
+    vpn_domains: list[str] = field(default_factory=lambda: list(VPN_DOMAINS))
     home_url: str = HOME_URL
     search_url: str = SEARCH_URL
     theme: str = BROWSER_THEME
@@ -153,6 +171,8 @@ class NetworkEvent:
     dns_from_cache: bool = False
     dns_ttl_remaining: Optional[int] = None
     endpoint: str = ""
+    route: str = "direct"
+    vpn_server: str = ""
     status: str = ""
     duration_ms: int = 0
     error: str = ""
@@ -170,6 +190,7 @@ class BrowserTab:
     page: Any = None
     current_url: str = ""
     title: str = "New Tab"
+    icon: Optional[QIcon] = None
     back_stack: list[str] = field(default_factory=list)
     forward_stack: list[str] = field(default_factory=list)
     last_response: Optional[HTTPResponse] = None
@@ -202,9 +223,86 @@ class BrowserPage(QWebEnginePage if QWebEnginePage else object):
         return True
 
 
+class BrowserTabs(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.tab_bar = QTabBar()
+        self.tab_bar.setObjectName("mainTabBar")
+        self.tab_bar.setExpanding(False)
+        self.stack = QStackedWidget()
+        self.stack.setObjectName("tabStack")
+        self._nav_widget: Optional[QWidget] = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.tab_bar)
+        layout.addWidget(self.stack, 1)
+
+        self.currentChanged = self.tab_bar.currentChanged
+        self.tabCloseRequested = self.tab_bar.tabCloseRequested
+        self.tab_bar.currentChanged.connect(self.stack.setCurrentIndex)
+        self.tab_bar.tabMoved.connect(self._on_tab_moved)
+
+    def setNavigationWidget(self, widget: QWidget) -> None:
+        if self._nav_widget is not None:
+            self.layout().removeWidget(self._nav_widget)
+        self._nav_widget = widget
+        self.layout().insertWidget(1, widget)
+
+    def setDocumentMode(self, enabled: bool) -> None:
+        self.tab_bar.setDocumentMode(enabled)
+
+    def setTabsClosable(self, enabled: bool) -> None:
+        self.tab_bar.setTabsClosable(enabled)
+
+    def setMovable(self, enabled: bool) -> None:
+        self.tab_bar.setMovable(enabled)
+
+    def addTab(self, widget: QWidget, label: str) -> int:
+        index = self.tab_bar.addTab(label)
+        self.stack.addWidget(widget)
+        self.setCurrentIndex(index)
+        return index
+
+    def removeTab(self, index: int) -> None:
+        widget = self.stack.widget(index)
+        self.tab_bar.removeTab(index)
+        if widget is not None:
+            self.stack.removeWidget(widget)
+
+    def _on_tab_moved(self, from_index: int, to_index: int) -> None:
+        widget = self.stack.widget(from_index)
+        if widget is None:
+            return
+        self.stack.removeWidget(widget)
+        self.stack.insertWidget(to_index, widget)
+        self.stack.setCurrentIndex(self.tab_bar.currentIndex())
+
+    def setCurrentIndex(self, index: int) -> None:
+        self.tab_bar.setCurrentIndex(index)
+        self.stack.setCurrentIndex(index)
+
+    def currentWidget(self) -> Optional[QWidget]:
+        return self.stack.currentWidget()
+
+    def widget(self, index: int) -> Optional[QWidget]:
+        return self.stack.widget(index)
+
+    def count(self) -> int:
+        return self.tab_bar.count()
+
+    def setTabText(self, index: int, label: str) -> None:
+        self.tab_bar.setTabText(index, label)
+
+    def setTabIcon(self, index: int, icon: QIcon) -> None:
+        self.tab_bar.setTabIcon(index, icon)
+
+
 class SettingsDialog(QDialog):
     def __init__(self, parent: QWidget, settings: BrowserSettings):
         super().__init__(parent)
+        self._initial_settings = settings
         self.setWindowTitle("Settings")
         self.setMinimumWidth(500)
 
@@ -265,6 +363,13 @@ class SettingsDialog(QDialog):
             http_default_port=self.http_port_input.value(),
             enable_dns_cache=self.cache_input.isChecked(),
             enable_http_cache=self.http_cache_input.isChecked(),
+            enable_vpn=self._initial_settings.enable_vpn,
+            vpn_host=self._initial_settings.vpn_host,
+            vpn_port=self._initial_settings.vpn_port,
+            vpn_token=self._initial_settings.vpn_token,
+            vpn_timeout=self._initial_settings.vpn_timeout,
+            vpn_mode=self._initial_settings.vpn_mode,
+            vpn_domains=list(self._initial_settings.vpn_domains),
             home_url=self.home_url_input.text().strip() or HOME_URL,
             search_url=self.search_url_input.text().strip() or SEARCH_URL,
             theme=self.theme_input.currentText(),
@@ -304,9 +409,11 @@ class BrowserApp:
         )
         self._ai_client = GeminiAssistantClient(self._ai_config) if ENABLE_AI_ASSISTANT else None
         self._assistant_sessions: dict[int, AssistantSessionState] = {}
+        self._favicon_cache: dict[str, QIcon] = {}
 
         self.dns_client = self._make_dns_client()
         self.http_client = HTTPClient()
+        self.vpn_client = self._make_vpn_client()
 
         self._setup_qt_profiles()
 
@@ -315,7 +422,7 @@ class BrowserApp:
         self.window.resize(1240, 780)
         self.window.setMinimumSize(980, 620)
 
-        self.tabs = QTabWidget()
+        self.tabs = BrowserTabs()
         self.tabs.setDocumentMode(True)
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
@@ -455,7 +562,6 @@ class BrowserApp:
         self.toolbar.setObjectName("browserToolbar")
         self.toolbar.setIconSize(QSize(18, 18))
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.window.addToolBar(self.toolbar)
 
         style = QApplication.style()
         self.back_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack), "Back", self.window)
@@ -509,6 +615,14 @@ class BrowserApp:
 
         self.toolbar.addAction(self.go_action)
 
+        self.vpn_button = QPushButton("VPN")
+        self.vpn_button.setObjectName("vpnButton")
+        self.vpn_button.setCheckable(True)
+        self.vpn_button.setChecked(self.settings.enable_vpn)
+        self.vpn_button.setToolTip("Route custom HTTP requests through Mini VPN")
+        self.vpn_button.setFixedSize(54, 36)
+        self.toolbar.addWidget(self.vpn_button)
+
         self.menu_button = QPushButton("≡")
         self.menu_button.setObjectName("menuButton")
         self.menu_button.setToolTip("Open menu")
@@ -529,9 +643,14 @@ class BrowserApp:
         self.menu.addAction(self.devtools_action)
         self.menu.addAction(self.settings_action)
         self.menu.addSeparator()
+        self.vpn_toggle_action = QAction("Use Mini VPN", self.window)
+        self.vpn_toggle_action.setCheckable(True)
+        self.vpn_toggle_action.setChecked(self.settings.enable_vpn)
+        self.menu.addAction(self.vpn_toggle_action)
         self.menu.addAction(self.ai_assistant_action)
         self.menu_button.setMenu(self.menu)
         self.toolbar.addWidget(self.menu_button)
+        self.tabs.setNavigationWidget(self.toolbar)
 
         main_splitter = QSplitter(Qt.Orientation.Vertical)
         main_splitter.setHandleWidth(10)
@@ -558,9 +677,9 @@ class BrowserApp:
         self.devtools_tabs.setObjectName("devtoolsTabs")
         devtools_layout.addWidget(self.devtools_tabs)
 
-        self.network_table = QTableWidget(0, 9)
+        self.network_table = QTableWidget(0, 11)
         self.network_table.setHorizontalHeaderLabels(
-            ["URL", "DNS IP", "DNS Cache", "TTL", "Endpoint", "Status", "HTTP Cache", "Time", "Error"]
+            ["URL", "Route", "VPN", "DNS IP", "DNS Cache", "TTL", "Endpoint", "Status", "HTTP Cache", "Time", "Error"]
         )
         self.network_table.setAlternatingRowColors(True)
         self.network_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -717,6 +836,8 @@ class BrowserApp:
         self.close_devtools_btn.clicked.connect(lambda: self.devtools_frame.hide())
         self.settings_action.triggered.connect(self._open_settings_page)
         self.ai_assistant_action.triggered.connect(lambda checked: self._toggle_assistant(checked))
+        self.vpn_button.toggled.connect(self._set_vpn_enabled)
+        self.vpn_toggle_action.toggled.connect(self._set_vpn_enabled)
         self.tabs.currentChanged.connect(lambda _: self._sync_toolbar())
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.network_table.itemSelectionChanged.connect(self._show_selected_event)
@@ -855,6 +976,21 @@ class BrowserApp:
                 background: {c['accent_soft']};
                 border-color: {c['accent']};
             }}
+            QPushButton#vpnButton {{
+                background: {c['panel']};
+                border-radius: 18px;
+                font-size: 12px;
+                font-weight: 700;
+                padding: 0;
+            }}
+            QPushButton#vpnButton:checked {{
+                background: {c['success']};
+                border-color: {c['success']};
+                color: white;
+            }}
+            QPushButton#vpnButton:hover {{
+                border-color: {c['accent']};
+            }}
             QPushButton#devtoolsCloseButton {{
                 border-radius: 12px;
                 min-height: 28px;
@@ -889,6 +1025,11 @@ class BrowserApp:
             QTabWidget#mainTabs::pane {{
                 background: {c['panel']};
                 border-top: 0;
+            }}
+            QTabBar#mainTabBar {{
+                background: {c['bar_top']};
+                border-bottom: 1px solid {c['border']};
+                padding-left: 10px;
             }}
             QTabBar::tab {{
                 color: {c['muted']};
@@ -1038,6 +1179,10 @@ class BrowserApp:
         view.loadFinished.connect(lambda ok, t=tab: self._on_view_load_finished(t, ok))
         view.urlChanged.connect(lambda qurl, t=tab: self._on_view_url_changed(t, qurl))
         view.titleChanged.connect(lambda title, t=tab: self._on_view_title_changed(t, title))
+        try:
+            view.iconChanged.connect(lambda icon, t=tab: self._on_view_icon_changed(t, icon))
+        except Exception:
+            pass
         index = self.tabs.addTab(view, "\U0001F576 Incognito" if incognito else "New Tab")
         self.tabs.setCurrentIndex(index)
         view.setProperty("browser_tab", tab)
@@ -1186,7 +1331,7 @@ class BrowserApp:
 
             self._set_status("Loading...")
             try:
-                response, cache_state, req_headers = self._custom_fetch(
+                response, cache_state, req_headers, route_meta = self._custom_fetch(
                     scheme=scheme,
                     host=parsed.host,
                     port=http_port,
@@ -1202,6 +1347,8 @@ class BrowserApp:
                 return
 
             event.request_headers = req_headers
+            event.route = route_meta.get("route", "direct")
+            event.vpn_server = route_meta.get("vpn_server", "")
 
             event.status = f"{response.status_code} {response.status_text}".strip()
             event.response_headers = dict(response.headers)
@@ -1368,6 +1515,12 @@ class BrowserApp:
         self._update_tab_label(tab)
         self._sync_toolbar()
 
+    def _on_view_icon_changed(self, tab: BrowserTab, icon: QIcon):
+        if icon is None or icon.isNull():
+            return
+        tab.icon = icon
+        self._update_tab_label(tab)
+
     def _load_same_origin_assets(self, html_body: str, ip: str, port: int, tab: BrowserTab) -> str:
         """Inline same-origin CSS as <style> tags and convert same-origin images to data URIs."""
         host = tab.last_event.host if tab.last_event else ""
@@ -1411,7 +1564,7 @@ class BrowserApp:
                     html_body = html_body[:match.start()] + _skip_external(href, full_tag) + html_body[match.end():]
                     continue
                 try:
-                    resp, _, _ = self._custom_fetch(scheme=scheme, host=host, port=port, path=request_path, ip=ip, tab=tab)
+                    resp, _, _, _ = self._custom_fetch(scheme=scheme, host=host, port=port, path=request_path, ip=ip, tab=tab)
                     if resp.is_ok:
                         replacement = f"<style>{resp.body}</style>"
                         html_body = html_body[:match.start()] + replacement + html_body[match.end():]
@@ -1428,7 +1581,7 @@ class BrowserApp:
                     html_body = html_body[:match.start()] + _skip_external(src, full_tag) + html_body[match.end():]
                 continue
             try:
-                resp, _, _ = self._custom_fetch(scheme=scheme, host=host, port=port, path=request_path, ip=ip, tab=tab)
+                resp, _, _, _ = self._custom_fetch(scheme=scheme, host=host, port=port, path=request_path, ip=ip, tab=tab)
                 if resp.is_ok:
                     mime = resp.headers.get("Content-Type", "application/octet-stream")
                     encoded = base64.b64encode(resp.body_bytes).decode("ascii")
@@ -1470,72 +1623,86 @@ class BrowserApp:
             return parsed.netloc
         return url.replace("http://", "").replace("https://", "").rstrip("/")
 
-    def _render_new_tab(self, tab: BrowserTab):
+    @staticmethod
+    def _favicon_url_for_url(url: str, size: int = 64) -> str:
+        parsed = urlparse(url if "://" in url else f"http://{url}")
+        host = parsed.hostname or ""
+        if not host:
+            return ""
+        return f"https://www.google.com/s2/favicons?domain={quote_plus(host)}&sz={int(size)}"
+
+    def _render_new_tab(self, tab: BrowserTab, show_add_shortcut: bool = False):
         logo_path = Path(__file__).resolve().parents[2] / "logo.png"
         logo_src = self._image_data_uri(logo_path)
         search_name = html.escape(self.settings.search_engine.title())
-        mode_chip = "Private session" if tab.incognito else "Saved history"
         shortcut_cards = "".join(
             (
                 "<article class='shortcut-card'>"
                 "<a class='shortcut-delete' href='internal:delete-shortcut?url={encoded}' aria-label='Delete shortcut'>×</a>"
                 "<a class='shortcut-link' href='{url}'>"
-                "<span class='shortcut-icon'>{letter}</span>"
-                "<div class='shortcut-copy'><strong>{label}</strong><small>{host}</small></div>"
+                "<span class='shortcut-icon'>"
+                "<img src='{icon_url}' alt='' onerror=\"this.style.display='none';this.nextElementSibling.style.display='block'\">"
+                "<b>{letter}</b>"
+                "</span>"
+                "<span class='shortcut-label'>{label}</span>"
                 "</a>"
                 "</article>"
             ).format(
                 encoded=quote_plus(self._shortcut_url(item)),
                 url=html.escape(self._shortcut_url(item)),
+                icon_url=html.escape(self._favicon_url_for_url(self._shortcut_url(item), 64)),
                 letter=html.escape(self._shortcut_label(item)[:1].upper() or "W"),
                 label=html.escape(self._shortcut_label(item)),
-                host=html.escape(self._display_host(self._shortcut_url(item))),
             )
-            for item in self.shortcuts[:10]
+            for item in self.shortcuts[:8]
         )
         logo_img = f"<img src='{html.escape(logo_src)}'>" if logo_src else ""
+        add_shortcut_modal = ""
+        if show_add_shortcut:
+            add_shortcut_modal = """
+            <div class="modal-backdrop">
+              <section class="add-shortcut-dialog">
+                <div class="dialog-head">
+                  <h2>Add shortcut</h2>
+                  <a class="dialog-close" href="internal:home" aria-label="Close">×</a>
+                </div>
+                <form class="shortcut-form" action="internal:add-shortcut" method="get">
+                  <label class="field"><span>Name</span><input name="name" autofocus placeholder="Label"></label>
+                  <label class="field"><span>URL</span><input name="url" placeholder="https://example.local"></label>
+                  <div class="action-row">
+                    <a class="ghost-link" href="internal:home">Cancel</a>
+                    <button type="submit">Save shortcut</button>
+                  </div>
+                </form>
+              </section>
+            </div>
+            """
         body = f"""
         <main class="page-shell home-shell">
-          <section class="home-hero surface">
-            <div class="brand">
+          <section class="home-hero">
+            <div class="home-brand">
               <div class="brand-mark">{logo_img}</div>
-              <div class="brand-copy">
-                <span class="brand-badge">WaterCat Browser</span>
-                <h1>Built for your custom stack.</h1>
-                <p>Fast local demos, custom DNS, raw HTTP, and a cleaner new tab experience inspired by modern browser chrome.</p>
-              </div>
-            </div>
-            <div class="page-chips hero-chips">
-              <span class="chip">{mode_chip}</span>
-              <span class="chip">Search: {search_name}</span>
-              <span class="chip">DNS {html.escape(self.settings.dns_host)}:{self.settings.dns_port}</span>
+              <h1>WaterCat</h1>
             </div>
             <form class="home-search" action="internal:go" method="get">
               <div class="search-shell">
                 <span class="search-glyph">&#8981;</span>
                 <input name="q" autofocus placeholder="Search with {search_name} or enter address">
-                <button type="submit">Go</button>
               </div>
             </form>
           </section>
-          <section class="surface shortcuts-surface">
-            <div class="surface-head">
-              <div>
-                <p class="section-kicker">Quick access</p>
-                <h2>Top shortcuts</h2>
-              </div>
-              <p class="surface-note">Open local sites fast, then trim the list from each tile when you no longer need it.</p>
-            </div>
+          <section class="shortcuts-surface">
             <div class="shortcut-grid">
               {shortcut_cards}
-              <form class="shortcut-form" action="internal:add-shortcut" method="get">
-                <p class="section-kicker">Add shortcut</p>
-                <input name="name" placeholder="Label">
-                <input name="url" placeholder="https://example.local">
-                <button type="submit">Save shortcut</button>
-              </form>
+              <article class="shortcut-card add-shortcut-card">
+                <a class="shortcut-link" href="internal:add-shortcut-form">
+                  <span class="shortcut-icon plus-icon">+</span>
+                  <span class="shortcut-label">Add</span>
+                </a>
+              </article>
             </div>
           </section>
+          {add_shortcut_modal}
         </main>
         """
         tab.view.setHtml(self._page_html("WaterCat Browser", body))
@@ -1824,7 +1991,7 @@ class BrowserApp:
             ".ghost-link{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:999px;padding:9px 14px;background:var(--panel-alt);color:var(--text)}"
             ".ghost-link:hover{border-color:var(--accent);color:var(--accent)}"
             ".page-shell{max-width:1180px;margin:0 auto;padding:36px 30px 56px}"
-            ".home-shell{display:flex;flex-direction:column;justify-content:center;min-height:100vh}"
+            ".home-shell{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding-top:72px;padding-bottom:80px}"
             ".page-hero{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin-bottom:24px}"
             ".page-copy{max-width:720px}"
             ".eyebrow,.section-kicker,.list-eyebrow,.brand-badge{font-size:12px;line-height:1.2;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-weight:700}"
@@ -1840,30 +2007,41 @@ class BrowserApp:
             ".grid{display:grid;gap:20px}"
             ".grid-2{grid-template-columns:minmax(0,1.35fr) minmax(280px,.95fr)}"
             ".brand{display:flex;justify-content:flex-start;gap:28px;align-items:flex-start;flex-wrap:wrap}"
-            ".brand-mark{width:92px;height:92px;border-radius:26px;background:rgba(255,255,255,.2);border:1px solid var(--border);display:grid;place-items:center;backdrop-filter:blur(12px);box-shadow:0 16px 36px var(--shadow-soft)}"
-            ".brand-mark img{width:78px;height:78px;object-fit:contain}"
+            ".home-brand{display:flex;align-items:center;justify-content:center;gap:18px;margin-bottom:42px}"
+            ".brand-mark{width:76px;height:76px;border-radius:22px;background:rgba(255,255,255,.74);border:1px solid var(--border);display:grid;place-items:center;box-shadow:0 16px 34px var(--shadow-soft)}"
+            ".brand-mark img{width:64px;height:64px;object-fit:contain}"
+            ".home-brand h1{font-size:40px;letter-spacing:0;font-weight:700;color:var(--text)}"
             ".brand-copy{max-width:700px}"
             ".brand-copy h1{margin-top:10px}"
             ".brand-copy p{margin-top:12px;color:var(--muted);font-size:18px;max-width:620px}"
             ".hero-chips{margin-top:6px}"
-            ".home-hero{position:relative;overflow:hidden;padding:30px 30px 26px}"
-            ".home-search{margin-top:28px}"
-            ".search-shell{display:flex;align-items:center;gap:12px;padding:8px;background:rgba(255,255,255,.3);border:1px solid var(--border);border-radius:26px;backdrop-filter:blur(12px)}"
-            ".search-glyph{display:grid;place-items:center;width:42px;height:42px;border-radius:18px;background:var(--panel);border:1px solid var(--border);color:var(--accent);font-size:18px;flex:0 0 auto}"
-            ".search-shell input{flex:1;border:0;background:transparent;box-shadow:none;padding:10px 4px;font-size:18px}"
+            ".home-hero{position:relative;width:min(980px,100%);padding:0}"
+            ".home-search{margin:0 auto;width:100%}"
+            ".search-shell{display:flex;align-items:center;gap:12px;height:64px;padding:0 18px;background:#4b4a56;border:0;border-radius:32px;box-shadow:0 10px 22px var(--shadow-soft)}"
+            ".search-glyph{display:grid;place-items:center;width:32px;height:32px;border-radius:16px;background:transparent;border:0;color:white;font-size:18px;flex:0 0 auto}"
+            ".search-shell input{flex:1;border:0;background:transparent;color:white;box-shadow:none;padding:10px 0;font-size:18px}"
+            ".search-shell input::placeholder{color:rgba(255,255,255,.58)}"
             ".search-shell input:focus{box-shadow:none}"
-            ".search-shell button{border-radius:18px;padding:12px 18px;min-width:90px}"
-            ".shortcut-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px}"
-            ".shortcut-card,.shortcut-form{position:relative;min-height:176px;border:1px solid var(--border);border-radius:22px;background:rgba(255,255,255,.35);backdrop-filter:blur(14px)}"
-            ".shortcut-link{display:flex;flex-direction:column;gap:18px;min-height:176px;padding:20px 18px;color:var(--text)}"
+            ".search-shell button{display:none}"
+            ".shortcuts-surface{width:min(780px,100%);margin-top:54px}"
+            ".shortcut-grid{display:flex;justify-content:center;align-items:flex-start;gap:28px;flex-wrap:wrap}"
+            ".shortcut-card{position:relative;width:80px;min-height:112px;background:transparent;border:0;border-radius:16px}"
+            ".shortcut-link{display:flex;flex-direction:column;align-items:center;gap:12px;color:var(--text)}"
             ".shortcut-link:hover{color:var(--text)}"
-            ".shortcut-icon{display:grid;place-items:center;width:56px;height:56px;border-radius:18px;background:var(--panel);border:1px solid var(--border);font-size:24px;font-weight:700;color:var(--accent);box-shadow:0 10px 18px var(--shadow-soft)}"
-            ".shortcut-copy{display:flex;flex-direction:column;gap:8px}"
-            ".shortcut-copy strong{font-size:16px;letter-spacing:-.02em}"
-            ".shortcut-copy small{color:var(--muted);font-size:13px;overflow-wrap:anywhere}"
-            ".shortcut-delete{position:absolute;top:12px;right:12px;display:grid;place-items:center;width:28px;height:28px;border-radius:999px;background:rgba(239,68,68,.14);border:1px solid rgba(239,68,68,.24);color:var(--error);font-weight:700}"
+            ".shortcut-icon{display:grid;place-items:center;width:80px;height:80px;border-radius:13px;background:#55545f;border:0;font-size:28px;font-weight:700;color:white;box-shadow:0 8px 18px var(--shadow-soft)}"
+            ".shortcut-icon img{width:48px;height:48px;object-fit:contain}"
+            ".shortcut-icon b{display:none;font-size:28px;color:white}"
+            ".plus-icon{font-size:38px;font-weight:400;color:rgba(255,255,255,.9)}"
+            ".shortcut-label{display:block;width:104px;margin-left:-12px;text-align:center;color:var(--text);font-size:15px;font-weight:500;line-height:1.2;overflow:hidden;text-overflow:ellipsis}"
+            ".shortcut-delete{position:absolute;top:-8px;right:-8px;display:grid;place-items:center;width:22px;height:22px;border-radius:999px;background:rgba(239,68,68,.92);border:1px solid rgba(255,255,255,.7);color:white;font-weight:700;opacity:0;transition:opacity .15s}"
+            ".shortcut-card:hover .shortcut-delete{opacity:1}"
             ".shortcut-delete:hover{background:rgba(239,68,68,.2);color:var(--error)}"
-            ".shortcut-form{display:flex;flex-direction:column;gap:12px;padding:18px;justify-content:center}"
+            ".modal-backdrop{position:fixed;inset:0;display:grid;place-items:center;background:rgba(17,24,39,.28);backdrop-filter:blur(4px);padding:24px;z-index:20}"
+            ".add-shortcut-dialog{width:min(440px,100%);background:var(--panel);border:1px solid var(--border);border-radius:18px;box-shadow:0 24px 70px var(--shadow);padding:22px}"
+            ".dialog-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}"
+            ".dialog-head h2{font-size:22px;letter-spacing:0}"
+            ".dialog-close{display:grid;place-items:center;width:32px;height:32px;border-radius:999px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);font-size:18px;font-weight:700}"
+            ".shortcut-form{display:flex;flex-direction:column;gap:14px}"
             ".settings-form{display:grid;gap:14px}"
             ".field{display:grid;gap:8px;color:var(--muted);font-weight:600}"
             ".action-row{display:flex;gap:12px;align-items:center;margin-top:8px;flex-wrap:wrap}"
@@ -1923,10 +2101,15 @@ class BrowserApp:
         path: str,
         ip: str,
         tab: BrowserTab,
-    ) -> tuple[HTTPResponse, str, dict[str, str]]:
+    ) -> tuple[HTTPResponse, str, dict[str, str], dict[str, str]]:
         """Centralized fetch helper: DNS already resolved, handles cookies + cache.
-        Returns (response, cache_state, request_headers)."""
+        Returns (response, cache_state, request_headers, route_meta)."""
         request_headers = self._request_headers(host, scheme, path, tab)
+        use_vpn = self._should_use_vpn(host)
+        route_meta = {
+            "route": "vpn" if use_vpn else "direct",
+            "vpn_server": self.vpn_client.endpoint if use_vpn else "",
+        }
         cache_state = "bypass"
         cached_entry = None
 
@@ -1944,14 +2127,15 @@ class BrowserApp:
                         body_bytes=cached_entry.body_bytes,
                         set_cookie_headers=[],
                     )
-                    return response, "hit", request_headers
+                    return response, "hit", request_headers, route_meta
                 elif cached_entry.can_revalidate():
                     if cached_entry.etag:
                         request_headers["If-None-Match"] = cached_entry.etag
                     if cached_entry.last_modified:
                         request_headers["If-Modified-Since"] = cached_entry.last_modified
 
-        response = self.http_client.get(
+        client = self.vpn_client if use_vpn else self.http_client
+        response = client.get(
             ip=ip,
             port=port,
             path=path,
@@ -2001,7 +2185,7 @@ class BrowserApp:
         else:
             cache_state = "miss"
 
-        return response, cache_state, request_headers
+        return response, cache_state, request_headers, route_meta
 
     def _download_current(self):
         tab = self._current_tab()
@@ -2537,6 +2721,10 @@ class BrowserApp:
             self._render_new_tab(tab)
             self._mark_internal_tab(tab, "internal:home", "New Tab", record_navigation)
             return
+        if action == "add-shortcut-form":
+            self._render_new_tab(tab, show_add_shortcut=True)
+            self._mark_internal_tab(tab, "internal:home", "New Tab", record_navigation)
+            return
         if action == "add-shortcut":
             target = values.get("url", [""])[0].strip()
             name = values.get("name", [""])[0].strip()
@@ -2711,6 +2899,8 @@ class BrowserApp:
             self.network_table.insertRow(row)
             values = [
                 event.url,
+                event.route,
+                event.vpn_server,
                 event.dns_ip or "",
                 "yes" if event.dns_from_cache else "no",
                 f"{event.dns_ttl_remaining}s" if event.dns_ttl_remaining is not None else "",
@@ -2722,7 +2912,7 @@ class BrowserApp:
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if col == 5 and event.status:
+                if col == 7 and event.status:
                     try:
                         code = int(event.status.split(" ", 1)[0])
                         if 200 <= code < 300:
@@ -2733,7 +2923,7 @@ class BrowserApp:
                             item.setForeground(error)
                     except (ValueError, IndexError):
                         pass
-                if col == 8 and event.error:
+                if col == 10 and event.error:
                     item.setForeground(error)
                 self.network_table.setItem(row, col, item)
 
@@ -2819,6 +3009,14 @@ class BrowserApp:
         self.forward_action.setEnabled(bool(tab.forward_stack))
         self.reload_action.setEnabled(bool(tab.current_url))
         self.download_action.setEnabled(bool(tab.last_response))
+        if hasattr(self, "vpn_button"):
+            self.vpn_button.blockSignals(True)
+            self.vpn_button.setChecked(self.settings.enable_vpn)
+            self.vpn_button.blockSignals(False)
+        if hasattr(self, "vpn_toggle_action"):
+            self.vpn_toggle_action.blockSignals(True)
+            self.vpn_toggle_action.setChecked(self.settings.enable_vpn)
+            self.vpn_toggle_action.blockSignals(False)
         label = tab.title or "New Tab"
         if tab.incognito:
             label = f"Incognito - {label}"
@@ -2832,6 +3030,9 @@ class BrowserApp:
                 if tab.incognito:
                     label = f"\U0001F576 {label}"
                 self.tabs.setTabText(index, label)
+                icon = tab.icon or self._tab_icon_for_url(tab.current_url)
+                if icon is not None and not icon.isNull():
+                    self.tabs.setTabIcon(index, icon)
                 return
 
     def _make_dns_client(self) -> DNSClient:
@@ -2841,6 +3042,71 @@ class BrowserApp:
             timeout=self.settings.dns_timeout,
             enable_cache=self.settings.enable_dns_cache,
         )
+
+    def _make_vpn_client(self) -> VPNClient:
+        return VPNClient(
+            host=self.settings.vpn_host,
+            port=self.settings.vpn_port,
+            token=self.settings.vpn_token,
+            timeout=self.settings.vpn_timeout,
+        )
+
+    def _tab_icon_for_url(self, url: str) -> QIcon:
+        if not url:
+            return QIcon()
+        if url.startswith("internal:home"):
+            return self._theme_icon("go-home", QStyle.StandardPixmap.SP_DirHomeIcon)
+        if url.startswith("internal:settings"):
+            return self._theme_icon("preferences-system", QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        if url.startswith("internal:"):
+            return self._theme_icon("text-html", QStyle.StandardPixmap.SP_FileIcon)
+
+        parsed = urlparse(url if "://" in url else f"http://{url}")
+        host = parsed.hostname or ""
+        if not host:
+            return QIcon()
+        cached = self._favicon_cache.get(host)
+        if cached is not None:
+            return cached
+        icon = QIcon()
+        try:
+            req = Request(
+                self._favicon_url_for_url(url, 32),
+                headers={"User-Agent": "MiniWebBrowser/1.0"},
+            )
+            with urlopen(req, timeout=1.2) as response:
+                data = response.read(65536)
+            pixmap = QPixmap()
+            if pixmap.loadFromData(data):
+                icon = QIcon(pixmap)
+        except Exception:
+            icon = QIcon()
+        self._favicon_cache[host] = icon
+        return icon
+
+    def _set_vpn_enabled(self, enabled: bool):
+        if self.settings.enable_vpn == enabled:
+            if hasattr(self, "vpn_button"):
+                self.vpn_button.blockSignals(True)
+                self.vpn_button.setChecked(enabled)
+                self.vpn_button.blockSignals(False)
+            if hasattr(self, "vpn_toggle_action"):
+                self.vpn_toggle_action.blockSignals(True)
+                self.vpn_toggle_action.setChecked(enabled)
+                self.vpn_toggle_action.blockSignals(False)
+            return
+        self.settings.enable_vpn = enabled
+        self.vpn_client = self._make_vpn_client()
+        if hasattr(self, "vpn_button"):
+            self.vpn_button.blockSignals(True)
+            self.vpn_button.setChecked(enabled)
+            self.vpn_button.blockSignals(False)
+        if hasattr(self, "vpn_toggle_action"):
+            self.vpn_toggle_action.blockSignals(True)
+            self.vpn_toggle_action.setChecked(enabled)
+            self.vpn_toggle_action.blockSignals(False)
+        self._save_state()
+        self._set_status(f"Mini VPN {'enabled' if enabled else 'disabled'}.")
 
     @staticmethod
     def _title_for(host: str, incognito: bool) -> str:
@@ -2880,6 +3146,23 @@ class BrowserApp:
     def _should_use_custom_loader_from_url(self, url: str) -> bool:
         parsed = urlparse(url)
         return self._should_use_custom_loader(parsed.hostname or "")
+
+    def _should_use_vpn(self, host: str) -> bool:
+        if not self.settings.enable_vpn:
+            return False
+        mode = self.settings.vpn_mode if self.settings.vpn_mode in {"all", "domains"} else "all"
+        if mode == "all":
+            return True
+        normalized = (host or "").strip().lower()
+        for rule in self.settings.vpn_domains:
+            rule = rule.strip().lower()
+            if not rule:
+                continue
+            if rule.startswith(".") and normalized.endswith(rule):
+                return True
+            if normalized == rule:
+                return True
+        return False
 
     @staticmethod
     def _request_path(raw_url: str, fallback_path: str) -> str:
@@ -3034,6 +3317,17 @@ class BrowserApp:
             enable_http_cache=bool(
                 self._setting_raw(raw, "enable_http_cache", "BROWSER_ENABLE_HTTP_CACHE", ENABLE_HTTP_CACHE)
             ),
+            enable_vpn=bool(
+                self._setting_raw(raw, "enable_vpn", "BROWSER_ENABLE_VPN", ENABLE_VPN)
+            ),
+            vpn_host=self._setting_str(raw, "vpn_host", "BROWSER_VPN_HOST", VPN_HOST),
+            vpn_port=self._setting_int(raw, "vpn_port", "BROWSER_VPN_PORT", VPN_PORT),
+            vpn_token=self._setting_str(raw, "vpn_token", "BROWSER_VPN_TOKEN", VPN_TOKEN),
+            vpn_timeout=self._setting_float(raw, "vpn_timeout", "BROWSER_VPN_TIMEOUT", VPN_TIMEOUT),
+            vpn_mode=self._normalize_vpn_mode(
+                self._setting_str(raw, "vpn_mode", "BROWSER_VPN_MODE", VPN_MODE)
+            ),
+            vpn_domains=self._setting_list(raw, "vpn_domains", "BROWSER_VPN_DOMAINS", VPN_DOMAINS),
             home_url=self._setting_str(raw, "home_url", "BROWSER_HOME_URL", HOME_URL),
             search_url=self._setting_str(raw, "search_url", "BROWSER_SEARCH_URL", SEARCH_URL),
             theme=self._normalize_theme(
@@ -3103,8 +3397,16 @@ class BrowserApp:
                 "dns_port": self.settings.dns_port,
                 "dns_timeout": self.settings.dns_timeout,
                 "http_default_port": self.settings.http_default_port,
+                "https_default_port": self.settings.https_default_port,
                 "enable_dns_cache": self.settings.enable_dns_cache,
                 "enable_http_cache": self.settings.enable_http_cache,
+                "enable_vpn": self.settings.enable_vpn,
+                "vpn_host": self.settings.vpn_host,
+                "vpn_port": self.settings.vpn_port,
+                "vpn_token": self.settings.vpn_token,
+                "vpn_timeout": self.settings.vpn_timeout,
+                "vpn_mode": self.settings.vpn_mode,
+                "vpn_domains": self.settings.vpn_domains,
                 "home_url": self.settings.home_url,
                 "search_url": self.settings.search_url,
                 "theme": self.settings.theme,
@@ -3150,6 +3452,14 @@ class BrowserApp:
         except (TypeError, ValueError):
             return config_value
 
+    def _setting_list(self, raw: dict[str, Any], state_key: str, env_key: str, config_value: list[str]) -> list[str]:
+        value = self._setting_raw(raw, state_key, env_key, config_value)
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return list(config_value)
+
     @staticmethod
     def _normalize_theme(value: str) -> str:
         return value if value in {"light", "dark"} else "light"
@@ -3157,6 +3467,10 @@ class BrowserApp:
     @staticmethod
     def _normalize_search_engine(value: str) -> str:
         return value if value in {"google", "bing"} else "google"
+
+    @staticmethod
+    def _normalize_vpn_mode(value: str) -> str:
+        return value if value in {"all", "domains"} else "all"
 
 
 def main():

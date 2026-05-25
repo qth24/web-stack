@@ -6,33 +6,38 @@
 - `core/dns_client.py`: send UDP JSON v1 DNS queries to the configured DNS server with TTL cache.
 - `core/host_routing.py`: decide which hostnames should go through the custom DNS stack.
 - `core/http_client.py`: send raw HTTP requests via TCP and parse status, headers, body.
-- `gui/browser_gui.py`: Chrome-like GUI browser with tabs, custom DNS, history, bookmarks, downloads, cookies/session, incognito mode, settings, and DevTools panel.
+- `core/vpn_client.py`: send raw HTTP requests through the Mini VPN tunnel server.
+- `gui/browser_gui.py`: GUI browser with tabs, custom DNS, Mini VPN toggle, history, bookmarks, downloads, cookies/session, incognito mode, settings, and DevTools panel.
 
 ## How to run
 
 From `web-stack` root:
 
 ```bash
-python -m pip install -r browser/requirements.txt
-cp browser/.env.example browser/.env
+python -m pip install 'PySide6>=6.7'
+cp .env.example .env
 python browser/gui/browser_gui.py
 ```
 
-Edit `browser/.env` to point the browser to a DNS server hosted on a VPS:
+Edit `.env` to point the browser to a DNS server hosted on a VPS:
 
 ```env
 BROWSER_DNS_HOST=YOUR_VPS_IP
 BROWSER_DNS_PORT=53
 ```
 
-Environment variables override values in `browser/.env`. You can also change DNS host, DNS port, timeout, default HTTP port, home URL, search URL, and DNS cache behavior inside the GUI Settings dialog.
+Environment variables override values in `.env`. You can also change DNS, HTTP cache, Mini VPN, theme, font, and search settings inside the GUI Settings page.
 
 For local development without `sudo`, use the same high UDP port as the DNS server, for example:
 
 ```env
 BROWSER_DNS_HOST=127.0.0.1
 BROWSER_DNS_PORT=5336
-BROWSER_HTTP_DEFAULT_PORT=80
+BROWSER_HTTP_DEFAULT_PORT=8000
+BROWSER_ENABLE_VPN=false
+BROWSER_VPN_HOST=127.0.0.1
+BROWSER_VPN_PORT=9443
+BROWSER_VPN_TOKEN=demo-token
 ```
 
 ## Configuration
@@ -43,6 +48,8 @@ Use `browser/.env.example` as the template:
 - `BROWSER_ENABLE_DNS_CACHE`
 - `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS`
 - `BROWSER_HTTP_DEFAULT_PORT`, `BROWSER_HTTP_TIMEOUT`
+- `BROWSER_ENABLE_VPN`, `BROWSER_VPN_HOST`, `BROWSER_VPN_PORT`, `BROWSER_VPN_TOKEN`
+- `BROWSER_VPN_MODE` (`all` or `domains`), `BROWSER_VPN_DOMAINS`
 - `BROWSER_HOME_URL`, `BROWSER_SEARCH_URL`, `BROWSER_DEFAULT_BOOKMARKS`
 - `BROWSER_THEME` (`light` or `dark`)
 - `BROWSER_STATE_DIR` or `BROWSER_STATE_PATH`
@@ -54,6 +61,7 @@ Use `browser/.env.example` as the template:
 - Multi-tab browsing.
 - HTML/CSS/JS rendering through Qt WebEngine.
 - Home page with browser logo, search prompt, shortcuts, and add-shortcut flow.
+- Mini VPN toolbar toggle and menu toggle for routing custom-loaded HTTP through `vpn/vpn_server.py`.
 - History and bookmarks are available from the main menu.
 - Download current response/file from the menu.
 - Cookie/session support for normal tabs; incognito tabs keep cookies in memory only.
@@ -61,7 +69,7 @@ Use `browser/.env.example` as the template:
 - Settings dialog and settings page.
 - Print to PDF from the main menu.
 - Light/dark mode, font size, and Google/Bing search engine selection from Settings.
-- DevTools panel with Network, Headers, Cookies, History, and Bookmarks.
+- DevTools panel with Network route/VPN columns, Headers, Cookies, History, and Bookmarks.
 - Built-in error pages for URL, DNS, and HTTP errors.
 
 Search uses `BROWSER_SEARCH_URL`. The default value is an internal search page, so normal search input will not cause a DNS error. Settings can show Google/Bing result-page links without opening those pages through custom DNS.
@@ -77,5 +85,6 @@ History, bookmarks, settings, and normal browsing cookies are stored in `~/.mini
 1. Input URL (for example: `http://example.local/about`)
 2. Browser parses URL into host/port/path
 3. Browser asks DNS server for IP
-4. Browser sends HTTP request to HTTP server
-5. Browser displays response headers, and GUI mode renders HTML + CSS + JavaScript
+4. If Mini VPN is off, Browser sends HTTP request directly to HTTP server
+5. If Mini VPN is on, Browser sends the raw HTTP request to VPN server, which forwards it to HTTP server
+6. Browser displays response headers, and GUI mode renders HTML + CSS + JavaScript

@@ -1,228 +1,377 @@
 # Mini Web Stack
 
-A from-scratch web stack built with Python stdlib only. Three modules simulate the core pieces of the web: a DNS server, an HTTP server, and a GUI browser.
+Mini Web Stack is a from-scratch Python web stack that simulates four core pieces of the web:
 
-No frameworks. No libraries (except PySide6 for the browser GUI). Just sockets, JSON, and raw HTTP/1.1.
+- a UDP JSON DNS server,
+- a raw-socket HTTP/HTTPS server,
+- an application-layer VPN tunnel server,
+- a PySide6/Qt WebEngine browser.
+
+Most networking code is implemented directly with Python stdlib sockets. The browser GUI uses PySide6, and the optional AI assistant uses `google-genai` only when enabled.
 
 ## Modules
 
-| Module | Port | Protocol | Description |
-|--------|------|----------|-------------|
-| [DNS Server](dns/README.md) | `127.0.0.1:5336` | UDP + JSON | Static-first DNS resolver with forwarding and TTL cache |
-| [HTTP Server](http-server/README.md) | `127.0.0.1:8000` | TCP + HTTP/1.1 | Serves static files from `public/` |
-| [Browser](browser/README.md) | GUI | PySide6 Qt WebEngine | Chrome-like browser with tabs, history, bookmarks, DevTools |
+| Module | Default local address | Protocol | Description |
+| --- | --- | --- | --- |
+| [DNS Server](dns/README.md) | `0.0.0.0:5336` | UDP + JSON v1 | Static/hybrid/forward DNS resolver with TTL cache and per-IP rate limiting |
+| [HTTP Server](http-server/README.md) | `0.0.0.0:8000`, HTTPS `0.0.0.0:8443` | TCP + HTTP/1.1 | Static file server, security headers, WAF, ETag/cache, reverse proxy |
+| [VPN Server](vpn/README.md) | `0.0.0.0:9443` | TCP + JSON-line tunnel | Application-layer tunnel that forwards browser raw HTTP requests to upstream servers |
+| [Browser](browser/README.md) | GUI | PySide6 Qt WebEngine | Browser with tabs, custom DNS, Mini VPN toggle, cache, cookies, incognito, DevTools, phishing detection, optional AI assistant |
 
-## Architecture
+## Current Features
 
-### Startup Order
+### DNS Server
 
-Start the entire stack with one command:
+- UDP JSON v1 request/response contract.
+- Supports only `A` records.
+- Domain normalization and validation.
+- Static records loaded from `dns/dns_records.json`.
+- Resolver modes:
+  - `static`: local records only.
+  - `forward`: system resolver only.
+  - `hybrid`: local records first, then system resolver.
+- In-memory TTL cache with lazy expiry.
+- Sliding-window rate limiting per client IP.
+- Structured error statuses: `BAD_REQUEST`, `UNSUPPORTED_VERSION`, `UNSUPPORTED_QTYPE`, `NXDOMAIN`, `RATE_LIMITED`, `ERROR`.
+
+### HTTP Server
+
+- Raw TCP HTTP/1.1 server on port `8000`.
+- HTTPS server on port `8443` with generated self-signed certificate.
+- Thread-per-client connection handling.
+- Static files from `http-server/public`.
+- `GET /` serves `index.html`.
+- `GET /health` returns JSON health data.
+- `404`, `405`, `400`, `500`, `501`, `502`, and `504` handling.
+- Static cache with `Cache-Control`, ETag, and `304 Not Modified`.
+- Security headers on responses, including CSP by default.
+- Optional HSTS for HTTPS responses.
+- Basic WAF for traversal, sensitive path probes, null bytes, and simple script injection probes.
+- Reverse proxy/load balancer with host/path route matching, round-robin upstreams, failover, and `X-Forwarded-*` headers.
+
+### Browser
+
+- URL parser for `http` and `https`.
+- Custom DNS loader for `localhost`, `.local`, and IPv4 hosts by default.
+- Optional `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS=true` to route all hostnames through the custom DNS client.
+- Raw HTTP client for custom-loaded pages.
+- Mini VPN client for routing custom-loaded requests through `vpn/vpn_server.py`.
+- Toolbar/menu VPN toggle, VPN settings, and DevTools route/VPN columns.
+- TLS support for HTTPS custom-loaded pages using an unverified context, useful for the local self-signed HTTPS demo.
+- Multi-tab GUI with back, forward, reload, home, bookmarks, history, downloads, settings, and print to PDF.
+- Normal and incognito tabs.
+- Persistent cookies/session for normal browsing; in-memory cookies for incognito.
+- Browser HTTP cache with freshness, ETag/Last-Modified revalidation, LRU eviction, and clear-cache action.
+- DevTools panel for Network, Headers, Cookies, Inspector, Console, History, and Bookmarks.
+- Phishing detection for URL and HTML content.
+- Optional page-aware AI assistant backed by Gemini on Vertex AI.
+
+### VPN Server
+
+- TCP JSON-line tunnel protocol.
+- Token authentication.
+- Forwards embedded raw HTTP requests to target TCP/TLS upstreams.
+- Returns raw HTTP responses to the browser.
+- Private/loopback targets are allowed by default for local demos.
+- Intended as an educational application-layer VPN-like tunnel, not an OS-level TUN/TAP VPN.
+
+## Local Demo
+
+This demo runs DNS, HTTP server, VPN server, and browser locally. AI assistant is disabled, so no Google Cloud or Gemini setup is required.
+
+### 1. Install dependencies
+
+```bash
+cd /home/thinhdq/SourceCode/LTM/web-stack
+python3 -m pip install 'PySide6>=6.7'
+```
+
+For the local demo, PySide6 is enough. `requirements.txt` also installs `google-genai` for the optional AI assistant, but that is not required when `BROWSER_ENABLE_AI_ASSISTANT=false`.
+
+### 2. Create local `.env`
+
+```bash
+cp .env.example .env
+```
+
+Make sure these local demo values are present:
+
+```env
+DNS_BIND_HOST=0.0.0.0
+DNS_PORT=5336
+DNS_RECORDS_PATH=dns/dns_records.json
+DNS_RESOLVER_MODE=hybrid
+
+HTTP_HOST=0.0.0.0
+HTTP_PORT=8000
+HTTP_HTTPS_PORT=8443
+HTTP_PUBLIC_DIR=public
+
+VPN_BIND_HOST=0.0.0.0
+VPN_PORT=9443
+VPN_TOKEN=demo-token
+
+BROWSER_DNS_HOST=127.0.0.1
+BROWSER_DNS_PORT=5336
+BROWSER_HTTP_DEFAULT_PORT=8000
+BROWSER_HTTPS_DEFAULT_PORT=443
+BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS=false
+BROWSER_ENABLE_VPN=false
+BROWSER_VPN_HOST=127.0.0.1
+BROWSER_VPN_PORT=9443
+BROWSER_VPN_TOKEN=demo-token
+BROWSER_VPN_MODE=all
+BROWSER_ENABLE_AI_ASSISTANT=false
+```
+
+If `BROWSER_ENABLE_AI_ASSISTANT` is not in `.env`, add it manually:
+
+```bash
+printf '\nBROWSER_ENABLE_AI_ASSISTANT=false\n' >> .env
+```
+
+### 3. Start all services
 
 ```bash
 python3 start.py
 ```
 
-This launches the DNS server, HTTP server, and browser GUI in the correct order.
+`start.py` starts services in this order:
 
-### Request Flow
+1. `dns/dns_server.py`
+2. `http-server/src/server.py`
+3. `vpn/vpn_server.py`
+4. `browser/gui/browser_gui.py`
 
-When the user enters `http://myweb.local/` in the browser:
+### 4. Open local demo pages
 
-```
-┌─────────┐
-│  User   │  enters http://myweb.local/
-└────┬────┘
-     │
-     ▼
-┌─────────────────┐
-│  URL Parser     │  host=myweb.local, port=8000, path=/
-└────┬────────────┘
-     │
-     ▼
-┌─────────────────┐
-│  DNS Client     │  UDP JSON v1 resolve query → 127.0.0.1:5336
-└────┬────────────┘
-     │
-     ▼
-┌─────────────────┐
-│  DNS Server     │  resolves from dns_records.json → {"version":"v1","status":"OK","ip":"127.0.0.1","ttl":60}
-└────┬────────────┘
-     │
-     ▼
-┌─────────────────┐
-│  TCP Connect    │  connect to 127.0.0.1:8000
-└────┬────────────┘
-     │
-     ▼
-┌─────────────────┐
-│  HTTP Client    │  GET / HTTP/1.1\r\nHost: myweb.local
-└────┬────────────┘
-     │
-     ▼
-┌─────────────────┐
-│  HTTP Server    │  serves public/index.html
-└────┬────────────┘
-     │
-     ▼
-┌─────────────────┐
-│  Qt WebEngine   │  renders HTML + CSS + JS
-└─────────────────┘
+In the browser URL bar, try:
+
+```text
+http://myweb.local/
+http://example.local/
+http://myweb.local/health
+http://myweb.local/nonexistent
 ```
 
-### Demo Domain
+Expected behavior:
 
-The primary demo domain is `myweb.local`, which resolves to `127.0.0.1`. Additional domains are configured in [dns/dns_records.json](dns/dns_records.json):
+- `myweb.local` and `example.local` resolve through the local DNS server to `127.0.0.1`.
+- The browser connects to the HTTP server on port `8000` because `BROWSER_HTTP_DEFAULT_PORT=8000`.
+- `/` renders `http-server/public/index.html`.
+- `/health` returns JSON.
+- `/nonexistent` returns a browser-rendered error page for HTTP `404`.
+
+To demo the VPN tunnel, click the `VPN` button in the browser toolbar or enable it in Settings, then reload `http://myweb.local/`. DevTools Network should show `Route = vpn` and `VPN = 127.0.0.1:9443`.
+
+Stop the stack with `Ctrl+C` in the terminal running `start.py`.
+
+## Request Flow
+
+When the user opens `http://myweb.local/`:
+
+```text
+User enters URL
+  -> Browser URL parser
+  -> Browser custom DNS decision for .local host
+  -> Browser DNS client sends UDP JSON v1 query to 127.0.0.1:5336
+  -> DNS server checks rate limit, TTL cache, static records, then optional forward resolver
+  -> DNS server returns IP + TTL
+  -> If VPN is off: Browser raw HTTP client connects to 127.0.0.1:8000
+  -> If VPN is on: Browser sends the raw HTTP request through 127.0.0.1:9443
+  -> VPN server forwards GET / HTTP/1.1 with Host: myweb.local to 127.0.0.1:8000
+  -> HTTP server parses request, runs WAF, checks proxy routes, serves static file
+  -> HTTP response returns with security/cache headers
+  -> Browser handles cookies/cache/phishing checks and renders through Qt WebEngine
+```
+
+Example DNS request:
+
+```json
+{
+  "version": "v1",
+  "id": "req-1",
+  "op": "resolve",
+  "domain": "myweb.local",
+  "qtype": "A"
+}
+```
+
+Example successful DNS response:
+
+```json
+{
+  "version": "v1",
+  "id": "req-1",
+  "status": "OK",
+  "domain": "myweb.local",
+  "qtype": "A",
+  "ip": "127.0.0.1",
+  "ttl": 60
+}
+```
+
+## Demo Domains
+
+The main local domains in `dns/dns_records.json` currently point to `127.0.0.1`:
 
 | Domain | IP | TTL |
-|--------|-----|-----|
+| --- | --- | --- |
 | `myweb.local` | `127.0.0.1` | 60s |
-| `example.local` | `127.0.0.1` | 5s |
-| `web.local` | `127.0.0.1` | 5s |
-| `api.local` | `127.0.0.1` | 8s |
-| `test.local` | `192.168.1.5` | 5s |
-| `httpforever.com` | `146.190.62.39` | 60s |
-| `info.cern.ch` | `188.184.67.127` | 60s |
-| `example.com` | `104.20.23.154` | 60s |
-| `example.org` | `104.20.26.136` | 60s |
-| `httpbin.org` | `34.234.10.121` | 60s |
+| `example.local` | `127.0.0.1` | 60s |
+| `web.local` | `127.0.0.1` | 60s |
+| `api.local` | `127.0.0.1` | 60s |
+| `test.local` | `127.0.0.1` | 60s |
 
-## Quick Start
-
-### Prerequisites
-
-- Python 3.8+
-- PySide6 (for the browser GUI)
-
-```bash
-# 1. Install browser dependencies
-pip install -r browser/requirements.txt
-
-# 2. Copy the unified environment file
-cp .env.example .env
-
-# 3. Start the entire stack
-python3 start.py
-```
-
-Then enter `http://myweb.local/` in the browser URL bar.
+The records file also contains many public domains with static IP/TTL values for resolver demos. In `hybrid` mode, domains missing from the static file can be resolved through the host operating system resolver and cached with `DNS_FORWARD_TTL_SECONDS`.
 
 ## Configuration
 
-All configuration lives in a single `.env` file at the project root. Copy `.env.example` to `.env` and edit as needed.
+All four modules load the root `.env` file. Environment variables override file values.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DNS_BIND_HOST` | `0.0.0.0` | Host to bind UDP socket |
-| `DNS_PORT` | `5336` | UDP port |
-| `DNS_RECORDS_PATH` | `dns/dns_records.json` | Path to DNS records file |
-| `DNS_DEFAULT_TTL` | `5` | Default TTL in seconds |
-| `DNS_RESOLVER_MODE` | `hybrid` | `static`, `hybrid`, or `forward` resolver behavior |
-| `DNS_FORWARD_TTL_SECONDS` | `60` | Cache TTL used for forwarded answers |
-| `HTTP_HOST` | `0.0.0.0` | Host to bind TCP socket |
-| `HTTP_PORT` | `8000` | TCP port |
-| `HTTP_PUBLIC_DIR` | `public/` | Static files directory |
-| `BROWSER_DNS_HOST` | `127.0.0.1` | DNS server host |
-| `BROWSER_DNS_PORT` | `5336` | DNS server port |
-| `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS` | `false` | Route all hostnames through the custom DNS stack |
-| `BROWSER_HTTP_DEFAULT_PORT` | `8000` | Default HTTP port for URLs without explicit port |
+| Variable | Default in `.env.example` | Description |
+| --- | --- | --- |
+| `DNS_BIND_HOST` | `0.0.0.0` | UDP bind host |
+| `DNS_PORT` | `5336` | UDP DNS port for local development |
+| `DNS_RECORDS_PATH` | `dns/dns_records.json` | Static record file |
+| `DNS_DEFAULT_TTL` | `5` | Fallback TTL for simple string records |
+| `DNS_RESOLVER_MODE` | `hybrid` | `static`, `forward`, or `hybrid` |
+| `DNS_FORWARD_TTL_SECONDS` | `60` | TTL for forwarded answers |
+| `DNS_RATE_LIMIT_MAX_QUERIES` | `10` | Queries allowed per window per IP |
+| `DNS_RATE_LIMIT_WINDOW_SECONDS` | `10` | Rate-limit window in seconds |
+| `HTTP_HOST` | `0.0.0.0` | HTTP/HTTPS bind host |
+| `HTTP_PORT` | `8000` | HTTP port |
+| `HTTP_HTTPS_PORT` | `8443` | HTTPS port |
+| `HTTP_PUBLIC_DIR` | `public` | Static file directory relative to `http-server/` |
+| `HTTP_CACHE_TTL` | `60` | Static cache max-age and in-memory TTL |
+| `HTTP_ENABLE_CSP` | `true` | Add Content-Security-Policy |
+| `HTTP_ENABLE_WAF` | `true` | Enable basic WAF checks |
+| `HTTP_PROXY_ROUTES_PATH` | `proxy_routes.json` | Reverse proxy route file relative to `http-server/` |
+| `VPN_BIND_HOST` | `0.0.0.0` | VPN tunnel TCP bind host |
+| `VPN_PORT` | `9443` | VPN tunnel TCP port |
+| `VPN_TOKEN` | `demo-token` | Shared token required by browser clients |
+| `VPN_ALLOW_PRIVATE_TARGETS` | `true` | Allow loopback/private upstream targets for local demos |
+| `BROWSER_DNS_HOST` | `127.0.0.1` | DNS server used by browser custom loader |
+| `BROWSER_DNS_PORT` | `5336` | DNS UDP port used by browser |
+| `BROWSER_ENABLE_DNS_CACHE` | `true` | Browser-side DNS TTL cache |
+| `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS` | `false` | Route every hostname through custom DNS |
+| `BROWSER_HTTP_DEFAULT_PORT` | `8000` | Default port for `http://host/` custom-loaded URLs |
+| `BROWSER_HTTPS_DEFAULT_PORT` | `443` | Default port for `https://host/` custom-loaded URLs |
+| `BROWSER_ENABLE_VPN` | `false` | Route custom-loaded requests through Mini VPN |
+| `BROWSER_VPN_HOST` | `127.0.0.1` | VPN server host used by the browser |
+| `BROWSER_VPN_PORT` | `9443` | VPN server TCP port used by the browser |
+| `BROWSER_VPN_TOKEN` | `demo-token` | Browser token sent to VPN server |
+| `BROWSER_VPN_MODE` | `all` | `all` or `domains` routing mode for custom-loaded requests |
+| `BROWSER_VPN_DOMAINS` | `.local,localhost` | Domain rules used when `BROWSER_VPN_MODE=domains` |
+| `BROWSER_ENABLE_HTTP_CACHE` | `true` | Browser disk-backed HTTP cache |
+| `BROWSER_ENABLE_PHISHING_DETECTION` | `true` | Browser phishing checks |
+| `BROWSER_ENABLE_AI_ASSISTANT` | `false` | Keep disabled for local demo without Google Cloud/Gemini setup |
 
-Environment variables override `.env` file values.
+## Run Modules Separately
 
-## Demo Scenarios
-
-### Basic Page Load
-
-1. Start all three modules in order.
-2. Open the browser and enter `http://myweb.local/`.
-3. Watch the page render from `public/index.html`.
-
-### DNS Resolution
-
-1. Enter `http://example.local/` in the browser.
-2. The browser sends a UDP JSON v1 query to the DNS server.
-3. DNS resolves from `dns_records.json` and returns `127.0.0.1`.
-4. The browser connects to the HTTP server and loads the page.
-
-### 404 Handling
-
-1. Enter `http://myweb.local/nonexistent` in the browser.
-2. The HTTP server returns `404 Not Found`.
-3. The browser displays its built-in error page.
-
-### Health Check
-
-1. Enter `http://myweb.local/health` in the browser.
-2. The HTTP server returns a JSON response.
-
-### External Domains
-
-The DNS records include real external domains like `example.com` and `httpbin.org`. In `hybrid` mode, unlisted domains can also be resolved through the system resolver and cached with `DNS_FORWARD_TTL_SECONDS` (though the HTTP server only serves local content).
-
-## Integration Test
-
-Run the full integration smoke test (DNS + HTTP servers in-process):
+DNS only:
 
 ```bash
-python3 -m pytest tests/test_integration.py -v
+python3 dns/dns_server.py --host 0.0.0.0 --port 5336
 ```
 
-Tests cover:
-- **Happy paths**: DNS resolution, HTTP root page, health endpoint, static file with cache headers
-- **Failure paths**: Unknown domain (NXDOMAIN), 404, rate limiting, method not allowed (405)
+HTTP/HTTPS server only:
 
-Uses test ports `5337` (DNS) and `8001` (HTTP) to avoid conflicts with dev servers.
+```bash
+python3 http-server/src/server.py
+```
 
-## Failure Paths
+VPN server only:
 
-These scenarios demonstrate error handling in the stack:
+```bash
+python3 vpn/vpn_server.py
+```
 
-| Scenario | Command | Expected Result |
-|----------|---------|-----------------|
-| Unknown domain | DNS query `{"version":"v1","id":"req-1","op":"resolve","domain":"unknown.local","qtype":"A"}` | `{"version":"v1","status":"NXDOMAIN"}` |
-| Missing page | `curl http://127.0.0.1:8001/nonexistent` | `404 Not Found` |
-| Rate limit exceeded | 11+ rapid DNS queries from same IP | `{"status": "RATE_LIMITED"}` |
-| Wrong HTTP method | `curl -X POST http://127.0.0.1:8001/` | `405 Method Not Allowed` |
-| Invalid JSON | Send non-JSON UDP packet to DNS | `{"version":"v1","status":"BAD_REQUEST"}` |
-| Empty domain | DNS query `{"version":"v1","id":"req-1","op":"resolve","domain":"","qtype":"A"}` | `{"version":"v1","status":"BAD_REQUEST"}` |
+Browser only:
+
+```bash
+python3 browser/gui/browser_gui.py
+```
+
+## Tests
+
+The repo uses `unittest` tests under each module.
+
+Run all tests:
+
+```bash
+python3 -m unittest discover -s dns -p 'test*.py'
+python3 -m unittest discover -s http-server/src -p 'test*.py'
+python3 -m unittest discover -s vpn -p 'test*.py'
+python3 -m unittest discover -s browser -p 'test*.py'
+```
+
+Coverage includes:
+
+- DNS cache, resolver modes, protocol validation, request handler errors, rate limiting, and UDP smoke test.
+- HTTP parser/response builder, routing, static files, MIME types, ETag/304, security headers, WAF, reverse proxy, round-robin, and proxy errors.
+- VPN protocol, token auth, TCP tunnel forwarding, and browser VPN client parsing.
+- Browser DNS client, host routing, cookies, HTTP cache, VPN route selection, phishing detection, and assistant prompt/context helpers.
 
 ## Project Structure
 
-```
+```text
 web-stack/
 ├── README.md
-├── demo.sh
-├── tests/
-│   └── test_integration.py
+├── .env.example
+├── requirements.txt
+├── start.py
 ├── dns/
 │   ├── README.md
-│   ├── dns_server.py
+│   ├── config.py
 │   ├── dns_cache.py
-│   ├── protocol.py
+│   ├── dns_records.json
 │   ├── dns_resolver.py
+│   ├── dns_server.py
+│   ├── protocol.py
 │   ├── rate_limiter.py
-│   ├── test_dns.py
-│   └── dns_records.json
+│   └── test_dns.py
 ├── http-server/
 │   ├── README.md
-│   ├── src/
-│   │   ├── server.py
-│   │   ├── http_parser.py
-│   │   ├── http_response.py
-│   │   ├── router.py
-│   │   ├── config.py
-│   │   └── mime_types.py
-│   └── public/
-│       ├── index.html
-│       └── styles.css
+│   ├── proxy_routes.json
+│   ├── public/
+│   │   ├── index.html
+│   │   └── styles.css
+│   └── src/
+│       ├── config.py
+│       ├── http_parser.py
+│       ├── http_response.py
+│       ├── mime_types.py
+│       ├── proxy.py
+│       ├── router.py
+│       ├── security.py
+│       ├── server.py
+│       ├── static_cache.py
+│       └── test_http_server.py
+├── vpn/
+│   ├── README.md
+│   ├── __init__.py
+│   ├── config.py
+│   ├── protocol.py
+│   ├── test_vpn.py
+│   └── vpn_server.py
 └── browser/
     ├── README.md
-    ├── test_host_routing.py
     ├── test_dns_client.py
+    ├── test_host_routing.py
+    ├── assets/
+    ├── core/
+    │   ├── assistant.py
+    │   ├── config.py
+    │   ├── cookies.py
+    │   ├── dns_client.py
+    │   ├── host_routing.py
+    │   ├── http_cache.py
+    │   ├── http_client.py
+    │   ├── phishing.py
+    │   ├── url_parser.py
+    │   └── vpn_client.py
     ├── gui/
     │   └── browser_gui.py
-    └── core/
-        ├── host_routing.py
-        ├── url_parser.py
-        ├── dns_client.py
-        └── http_client.py
+    └── tests/
 ```

@@ -2,7 +2,7 @@
 """Start all Mini Web Stack services from the project root.
 
 Usage:
-    python3 start.py             # start all 3 services
+    python3 start.py             # start all 4 services
     python3 start.py --dry-run   # print commands without executing
 """
 
@@ -86,6 +86,7 @@ def main() -> None:
     services = [
         ("DNS Server", "dns/dns_server.py"),
         ("HTTP Server", "http-server/src/server.py"),
+        ("VPN Server", "vpn/vpn_server.py"),
         ("Browser", "browser/gui/browser_gui.py"),
     ]
 
