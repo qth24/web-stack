@@ -9,7 +9,7 @@ import base64
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, quote_plus, unquote_plus, urlencode, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote_plus, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 try:
     from PySide6.QtCore import QSize, Qt, QTimer, QUrl
     from PySide6.QtGui import QAction, QColor, QIcon
-    from PySide6.QtGui import QPixmap
     try:
         from PySide6.QtWebEngineCore import QWebEnginePage
     except ImportError:
@@ -110,7 +109,7 @@ from browser.core.config import (
     BROWSER_FONT_SIZE,
 )
 from browser.core.dns_client import DNSClient, DNSError
-from browser.core.host_routing import is_ipv4_address, should_use_custom_dns
+from browser.core.host_routing import effective_port_for_host, is_ipv4_address, should_use_custom_dns
 from browser.core.http_client import HTTPClient, HTTPError, HTTPResponse
 from browser.core.vpn_client import VPNClient, VPNError
 from browser.core.url_parser import URLParseError, parse_url
@@ -582,6 +581,7 @@ class BrowserApp:
         self.download_action = QAction(self._theme_icon("download"), "Download", self.window)
         self.devtools_action = QAction(self._theme_icon("applications-development"), "DevTools", self.window)
         self.settings_action = QAction("Settings", self.window)
+        self.vpn_check_action = QAction("Check VPN IP", self.window)
         self.ai_assistant_action = QAction(self._theme_icon("dialog-question"), "AI Assistant", self.window)
         self.ai_assistant_action.setCheckable(True)
         self.go_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), "Go", self.window)
@@ -647,6 +647,7 @@ class BrowserApp:
         self.vpn_toggle_action.setCheckable(True)
         self.vpn_toggle_action.setChecked(self.settings.enable_vpn)
         self.menu.addAction(self.vpn_toggle_action)
+        self.menu.addAction(self.vpn_check_action)
         self.menu.addAction(self.ai_assistant_action)
         self.menu_button.setMenu(self.menu)
         self.toolbar.addWidget(self.menu_button)
@@ -835,6 +836,7 @@ class BrowserApp:
         self.devtools_action.triggered.connect(self._toggle_devtools)
         self.close_devtools_btn.clicked.connect(lambda: self.devtools_frame.hide())
         self.settings_action.triggered.connect(self._open_settings_page)
+        self.vpn_check_action.triggered.connect(lambda: self._navigate("internal:vpn-check"))
         self.ai_assistant_action.triggered.connect(lambda checked: self._toggle_assistant(checked))
         self.vpn_button.toggled.connect(self._set_vpn_enabled)
         self.vpn_toggle_action.toggled.connect(self._set_vpn_enabled)
@@ -1282,7 +1284,7 @@ class BrowserApp:
                         tab.phishing_assessment = url_assessment
                         self._set_status(f"Suspicious: {url_assessment.score}")
 
-            if not self._should_use_custom_loader(parsed.host):
+            if not self._should_use_custom_loader(parsed.host, parsed.protocol):
                 self._navigate_with_webengine(
                     parsed.raw,
                     parsed.host,
@@ -1317,11 +1319,7 @@ class BrowserApp:
             event.dns_from_cache = dns_from_cache
             event.dns_ttl_remaining = dns_ttl_remaining
             
-            # Use appropriate default port based on protocol
-            if parsed.port in (80, 443):
-                http_port = self.settings.https_default_port if parsed.protocol == "https" else self.settings.http_default_port
-            else:
-                http_port = parsed.port
+            http_port = self._effective_port(parsed.raw, parsed.protocol, parsed.host, parsed.port)
                 
             event.endpoint = f"{dns_ip}:{http_port}"
             self._set_status("Connecting...")
@@ -1356,6 +1354,22 @@ class BrowserApp:
             event.cache_state = cache_state
             tab.last_response = response
             tab.last_event = event
+
+            redirect_url = self._redirect_target(parsed.raw, response)
+            if redirect_url:
+                self._record_event(event)
+                self._set_status(f"Redirecting to {redirect_url}")
+                QTimer.singleShot(
+                    0,
+                    lambda target=redirect_url: self._navigate(
+                        target,
+                        tab=tab,
+                        add_history=add_history,
+                        record_navigation=record_navigation,
+                    ),
+                )
+                return
+
             self._render_response(tab, response, dns_ip, http_port, request_path, cache_state)
             self._record_event(event)
 
@@ -1385,6 +1399,8 @@ class BrowserApp:
             html_body = self._load_same_origin_assets(response.body, ip, port, tab)
             tab.view.setHtml(html_body, base_url)
             self._run_post_load_phishing(tab)
+        elif response.is_ok and self._is_displayable_response(content_type):
+            self._render_text_response(tab, response)
         elif response.is_ok:
             self._render_download_page(tab, response)
         else:
@@ -1519,6 +1535,9 @@ class BrowserApp:
         if icon is None or icon.isNull():
             return
         tab.icon = icon
+        parsed = urlparse(tab.current_url if "://" in tab.current_url else "")
+        if parsed.hostname:
+            self._favicon_cache[parsed.hostname] = icon
         self._update_tab_label(tab)
 
     def _load_same_origin_assets(self, html_body: str, ip: str, port: int, tab: BrowserTab) -> str:
@@ -1780,6 +1799,85 @@ class BrowserApp:
         )
         tab.view.setHtml(self._page_html("Search", body))
 
+    def _render_vpn_check_page(self, tab: BrowserTab):
+        direct_ip, direct_error = self._fetch_direct_ip()
+        vpn_ip, vpn_error, vpn_source = self._fetch_vpn_ip()
+        direct_text = direct_ip or f"Error: {direct_error}"
+        vpn_text = vpn_ip or f"Error: {vpn_error}"
+        verdict = "VPN route is working." if vpn_ip and vpn_ip != direct_ip else "VPN route is not changing the visible IP."
+        if vpn_ip and not direct_ip:
+            verdict = "VPN route returned a public IP."
+
+        rows = [
+            ("Local direct IP", direct_text),
+            ("Mini VPN IP", vpn_text),
+            ("VPN endpoint", self.vpn_client.endpoint),
+            ("VPN toggle", "On" if self.settings.enable_vpn else "Off"),
+            ("Check source", vpn_source or "-"),
+        ]
+        row_html = "".join(
+            "<div class='metric-row'>"
+            f"<span>{html.escape(label)}</span>"
+            f"<strong>{html.escape(value)}</strong>"
+            "</div>"
+            for label, value in rows
+        )
+        body = (
+            "<main class='page-shell'>"
+            + self._page_header(
+                "Mini VPN",
+                "VPN IP check",
+                "This diagnostic uses the configured Mini VPN tunnel directly against HTTP IP endpoints.",
+            )
+            + "<section class='surface'>"
+            + f"<h2>{html.escape(verdict)}</h2>"
+            + "<div class='metric-list'>"
+            + row_html
+            + "</div>"
+            + "<p class='muted-note'>HTTPS pages loaded by Qt WebEngine do not use this application-layer tunnel, so public IP checker sites opened normally can still show the local IP.</p>"
+            + "<div class='action-row'>"
+            + "<a class='button-link' href='internal:vpn-check'>Run again</a>"
+            + "<a class='ghost-link' href='http://httpbin.org/ip'>Open HTTP test URL</a>"
+            + "</div>"
+            + "</section></main>"
+        )
+        tab.view.setHtml(self._page_html("VPN Check", body))
+        self._set_status(verdict)
+
+    def _fetch_direct_ip(self) -> tuple[str, str]:
+        try:
+            request = Request(
+                "http://api.ipify.org/",
+                headers={"User-Agent": "MiniWebBrowser/1.0", "Accept": "text/plain,*/*"},
+            )
+            with urlopen(request, timeout=4) as response:
+                return response.read(128).decode("utf-8", errors="replace").strip(), ""
+        except Exception as exc:
+            return "", str(exc)
+
+    def _fetch_vpn_ip(self) -> tuple[str, str, str]:
+        checks = [
+            ("api.ipify.org", "/", "plain"),
+            ("icanhazip.com", "/", "plain"),
+            ("httpbin.org", "/ip", "json"),
+        ]
+        last_error = ""
+        for host, path, response_type in checks:
+            try:
+                ip = socket.gethostbyname(host)
+                response = self.vpn_client.get(ip=ip, port=80, path=path, host=host)
+                body = response.body.strip()
+                if response_type == "json":
+                    parsed = json.loads(body)
+                    body = str(parsed.get("origin", "")).strip()
+                body = body.splitlines()[0].strip()
+                if response.status_code == 200 and body:
+                    return body, "", host
+                last_error = f"{host}: {response.status_code} {response.status_text}"
+            except Exception as exc:
+                last_error = f"{host}: {exc}"
+        return "", last_error, ""
+
     def _render_error(self, tab: BrowserTab, title: str, message: str, code: int = 500):
         if code == 404 or "not found" in title.lower():
             icon = "&#128269;"
@@ -1838,6 +1936,40 @@ class BrowserApp:
             + "</section></main>"
         )
         tab.view.setHtml(self._page_html("Download ready", body))
+
+    def _render_text_response(self, tab: BrowserTab, response: HTTPResponse):
+        content_type = response.headers.get("Content-Type", "text/plain")
+        size = len(response.body_bytes)
+        size_str = f"{size:,}" if size >= 1000 else str(size)
+        body_text = response.body.strip()
+        if "application/json" in content_type.lower():
+            try:
+                body_text = json.dumps(json.loads(response.body), indent=2)
+            except json.JSONDecodeError:
+                pass
+        body = (
+            "<main class='page-shell'>"
+            + self._page_header(
+                "Response",
+                "Response body",
+                "The custom loader received a displayable response.",
+                [html.escape(content_type), f"{size_str} bytes"],
+            )
+            + "<section class='surface'>"
+            + f"<pre>{html.escape(body_text)}</pre>"
+            + "</section></main>"
+        )
+        tab.view.setHtml(self._page_html("Response", body))
+
+    @staticmethod
+    def _is_displayable_response(content_type: str) -> bool:
+        content_type = (content_type or "").lower()
+        return (
+            content_type.startswith("text/")
+            or "application/json" in content_type
+            or "application/xml" in content_type
+            or "application/javascript" in content_type
+        )
 
     def _open_settings_page(self):
         self._show_settings_tab()
@@ -2051,6 +2183,12 @@ class BrowserApp:
             ".kv-row:last-child{border-bottom:0;padding-bottom:0}"
             ".kv-row span{color:var(--muted)}"
             ".kv-row b{font-weight:600;text-align:right;overflow-wrap:anywhere}"
+            ".metric-list{display:grid;gap:0;margin-top:18px;margin-bottom:18px;border:1px solid var(--border);border-radius:18px;overflow:hidden;background:var(--panel)}"
+            ".metric-row{display:flex;justify-content:space-between;gap:18px;padding:14px 16px;border-bottom:1px solid var(--border-soft)}"
+            ".metric-row:last-child{border-bottom:0}"
+            ".metric-row span{color:var(--muted)}"
+            ".metric-row strong{text-align:right;overflow-wrap:anywhere}"
+            ".muted-note{color:var(--muted);margin:10px 0 16px}"
             ".list-card,.result-card{display:flex;justify-content:space-between;gap:18px;padding:18px 20px;border:1px solid var(--border);border-radius:20px;background:var(--panel);box-shadow:0 10px 20px var(--shadow-soft);color:var(--text);transition:border-color .18s,transform .18s}"
             ".list-card:hover,.result-card:hover{border-color:var(--accent);color:var(--text);transform:translateY(-1px)}"
             ".list-copy{display:grid;gap:8px;min-width:0}"
@@ -2721,6 +2859,10 @@ class BrowserApp:
             self._render_new_tab(tab)
             self._mark_internal_tab(tab, "internal:home", "New Tab", record_navigation)
             return
+        if action == "vpn-check":
+            self._render_vpn_check_page(tab)
+            self._mark_internal_tab(tab, "internal:vpn-check", "VPN Check", record_navigation)
+            return
         if action == "add-shortcut-form":
             self._render_new_tab(tab, show_add_shortcut=True)
             self._mark_internal_tab(tab, "internal:home", "New Tab", record_navigation)
@@ -3068,21 +3210,7 @@ class BrowserApp:
         cached = self._favicon_cache.get(host)
         if cached is not None:
             return cached
-        icon = QIcon()
-        try:
-            req = Request(
-                self._favicon_url_for_url(url, 32),
-                headers={"User-Agent": "MiniWebBrowser/1.0"},
-            )
-            with urlopen(req, timeout=1.2) as response:
-                data = response.read(65536)
-            pixmap = QPixmap()
-            if pixmap.loadFromData(data):
-                icon = QIcon(pixmap)
-        except Exception:
-            icon = QIcon()
-        self._favicon_cache[host] = icon
-        return icon
+        return QIcon()
 
     def _set_vpn_enabled(self, enabled: bool):
         if self.settings.enable_vpn == enabled:
@@ -3137,15 +3265,14 @@ class BrowserApp:
     def _is_ipv4(value: str) -> bool:
         return is_ipv4_address(value)
 
-    def _should_use_custom_loader(self, host: str) -> bool:
-        return should_use_custom_dns(
-            host,
-            force_all_hosts=FORCE_CUSTOM_DNS_ALL_HOSTS,
-        )
+    def _should_use_custom_loader(self, host: str, scheme: str = "") -> bool:
+        if should_use_custom_dns(host, force_all_hosts=FORCE_CUSTOM_DNS_ALL_HOSTS):
+            return True
+        return scheme == "http" and self._should_use_vpn(host)
 
     def _should_use_custom_loader_from_url(self, url: str) -> bool:
         parsed = urlparse(url)
-        return self._should_use_custom_loader(parsed.hostname or "")
+        return self._should_use_custom_loader(parsed.hostname or "", parsed.scheme)
 
     def _should_use_vpn(self, host: str) -> bool:
         if not self.settings.enable_vpn:
@@ -3165,12 +3292,42 @@ class BrowserApp:
         return False
 
     @staticmethod
+    def _header_value(headers: dict[str, str], name: str) -> str:
+        for key, value in headers.items():
+            if key.lower() == name.lower():
+                return value
+        return ""
+
+    def _redirect_target(self, current_url: str, response: HTTPResponse) -> str:
+        if not 300 <= response.status_code < 400:
+            return ""
+        location = self._header_value(response.headers, "Location").strip()
+        if not location:
+            return ""
+        return urljoin(current_url, location)
+
+    @staticmethod
     def _request_path(raw_url: str, fallback_path: str) -> str:
         parsed = urlparse(raw_url)
         path = parsed.path or fallback_path or "/"
         if parsed.query:
             path = f"{path}?{parsed.query}"
         return path
+
+    def _effective_port(self, raw_url: str, scheme: str, host: str, parsed_port: int) -> int:
+        try:
+            explicit_port = urlparse(raw_url).port
+        except ValueError:
+            explicit_port = parsed_port
+        if explicit_port is not None:
+            return explicit_port
+        return effective_port_for_host(
+            scheme,
+            host,
+            None,
+            self.settings.http_default_port,
+            self.settings.https_default_port,
+        )
 
     def _engine_search_url(self, query: str) -> str:
         encoded = quote_plus(query)

@@ -202,7 +202,9 @@ class MiniVPNServer:
                 response = self.handler.handle_frame(frame)
                 client_socket.sendall(encode_frame(response))
                 status = response.get("status", "-")
-                log_event("TUNNEL", f"{client_addr[0]} -> {status}", "32" if status == "OK" else "31")
+                message = response.get("message", "")
+                suffix = f": {message}" if message else ""
+                log_event("TUNNEL", f"{client_addr[0]} -> {status}{suffix}", "32" if status == "OK" else "31")
             except Exception as exc:
                 error = build_error_response(STATUS_ERROR, str(exc))
                 try:

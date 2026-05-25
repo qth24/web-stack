@@ -61,7 +61,7 @@ Use `browser/.env.example` as the template:
 - Multi-tab browsing.
 - HTML/CSS/JS rendering through Qt WebEngine.
 - Home page with browser logo, search prompt, shortcuts, and add-shortcut flow.
-- Mini VPN toolbar toggle and menu toggle for routing custom-loaded HTTP through `vpn/vpn_server.py`.
+- Mini VPN toolbar toggle, menu toggle, and `Check VPN IP` diagnostic for routing custom-loaded HTTP through `vpn/vpn_server.py`.
 - History and bookmarks are available from the main menu.
 - Download current response/file from the menu.
 - Cookie/session support for normal tabs; incognito tabs keep cookies in memory only.
@@ -75,6 +75,8 @@ Use `browser/.env.example` as the template:
 Search uses `BROWSER_SEARCH_URL`. The default value is an internal search page, so normal search input will not cause a DNS error. Settings can show Google/Bing result-page links without opening those pages through custom DNS.
 
 By default, the custom DNS loader is used for `localhost`, `.local` hostnames, and direct IPv4 addresses. Set `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS=true` to route all hostnames through the custom DNS client.
+
+Mini VPN is not a system-level VPN. It only affects WaterCat's custom-loaded HTTP requests. HTTPS pages and ordinary Qt WebEngine-loaded pages still use the machine network directly.
 
 ## Local state
 

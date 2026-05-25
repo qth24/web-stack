@@ -162,7 +162,9 @@ Expected behavior:
 - `/health` returns JSON.
 - `/nonexistent` returns a browser-rendered error page for HTTP `404`.
 
-To demo the VPN tunnel, click the `VPN` button in the browser toolbar or enable it in Settings, then reload `http://myweb.local/`. DevTools Network should show `Route = vpn` and `VPN = 127.0.0.1:9443`.
+To demo the Mini VPN tunnel, click the `VPN` button in the browser toolbar, then open `http://httpbin.org/ip` or use Menu -> `Check VPN IP`. DevTools Network should show `Route = vpn` for custom-loaded HTTP requests.
+
+The Mini VPN is an application-layer HTTP tunnel for this project, not a system VPN. HTTPS pages and normal Qt WebEngine tabs still use the machine network directly, so external IP checker sites opened as regular HTTPS pages can show the local IP.
 
 Stop the stack with `Ctrl+C` in the terminal running `start.py`.
 
