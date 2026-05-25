@@ -92,6 +92,7 @@ from browser.core.config import (
     VPN_TIMEOUT,
     VPN_MODE,
     VPN_DOMAINS,
+    GOOGLE_SAFE_BROWSING_API_KEY,
     PHISHING_BLOCK_THRESHOLD,
     PHISHING_RULES_PATH,
     PHISHING_SUSPICIOUS_THRESHOLD,
@@ -119,12 +120,16 @@ from browser.core.http_cache import HTTPCache
 from browser.core.phishing import (
     ThreatAssessment,
     ReputationData,
+    SignalHit,
+    ReputationHit,
     assess_url,
     assess_content,
     load_reputation,
     load_user_rules_raw,
     save_user_rules,
     merge_assessments,
+    get_top_reasons,
+    set_external_reputation_lookup,
 )
 from browser.core.assistant import (
     AssistantConfig,
@@ -396,7 +401,11 @@ class BrowserApp:
         self.http_cache = HTTPCache(STATE_DIR / "http_cache", HTTP_CACHE_MAX_MB, HTTP_CACHE_MAX_ENTRY_MB)
         self._phishing_enabled = ENABLE_PHISHING_DETECTION
         self._phishing_reputation = load_reputation(PHISHING_RULES_PATH) if self._phishing_enabled else None
-        self._phishing_allowlist: set[str] = set()
+        self._phishing_session_host_allow: set[str] = set()
+
+        if GOOGLE_SAFE_BROWSING_API_KEY and self._phishing_enabled:
+            from browser.core.safe_browsing import google_safe_browsing_lookup
+            set_external_reputation_lookup(google_safe_browsing_lookup)
 
         self._ai_config = AssistantConfig(
             enabled=ENABLE_AI_ASSISTANT,
@@ -1274,8 +1283,9 @@ class BrowserApp:
                 return
 
             normalized_url = parsed.raw.lower()
+            host = (parsed.host or "").lower()
             if self._phishing_enabled and self._phishing_reputation is not None:
-                if normalized_url not in self._phishing_allowlist:
+                if host not in self._phishing_session_host_allow:
                     url_assessment = assess_url(parsed.raw, self._phishing_reputation)
                     if url_assessment.verdict == "phishing":
                         self._show_phishing_warning(tab, parsed.raw, url_assessment)
@@ -1415,8 +1425,8 @@ class BrowserApp:
             return
         if not tab.current_url or tab.current_url.startswith("internal:"):
             return
-        normalized_url = tab.current_url.lower()
-        if normalized_url in self._phishing_allowlist:
+        host = (urlparse(tab.current_url).hostname or "").lower()
+        if host in self._phishing_session_host_allow:
             return
 
         try:
@@ -1428,8 +1438,8 @@ class BrowserApp:
 
     def _on_content_analysis_done(self, tab: BrowserTab, html: str):
         url = tab.current_url
-        normalized_url = url.lower()
-        if normalized_url in self._phishing_allowlist:
+        host = (urlparse(url).hostname or "").lower()
+        if host in self._phishing_session_host_allow:
             return
 
         pre_assessment = getattr(tab, "phishing_assessment", None)
@@ -1442,24 +1452,40 @@ class BrowserApp:
             tab.last_event.risk_verdict = merged.verdict
             tab.last_event.risk_reasons = list(merged.reasons)
 
-        if merged.verdict == "phishing":
+        if merged.verdict in ("phishing", "suspicious"):
             self._show_phishing_warning(tab, url, merged)
-        elif merged.verdict == "suspicious":
-            self._set_status(f"Suspicious: {merged.score}")
 
     def _show_phishing_warning(self, tab: BrowserTab, url: str, assessment: Any):
         import urllib.parse
         encoded_url = urllib.parse.quote_plus(url)
+        parsed = urlparse(url)
+        encoded_host = urllib.parse.quote_plus(parsed.hostname or url)
+
+        top_reasons = get_top_reasons(assessment, 3)
         reasons_html = "".join(
-            f"<li>{html.escape(r)}</li>" for r in assessment.reasons
+            f"<li>{html.escape(r)}</li>" for r in top_reasons
         )
+
+        if assessment.verdict == "suspicious":
+            icon = "&#9888;"
+            heading = "Suspicious Site Detected"
+            lead = "WaterCat flagged this page as potentially risky. Proceed with caution."
+            primary = f"<a class='button-link' href='internal:phishing-continue?url={encoded_url}'>Continue</a>"
+            secondary = f"<a class='ghost-link' href='javascript:history.back()'>Go back</a>"
+        else:
+            icon = "&#128683;"
+            heading = "Phishing Site Detected"
+            lead = "WaterCat blocked this page because it may be a phishing attempt."
+            primary = f"<a class='button-link' href='javascript:history.back()'>Go back</a>"
+            secondary = f"<a class='ghost-link' href='internal:phishing-continue?url={encoded_url}'>Continue anyway</a>"
+
         body = (
             "<main class='page-shell error-shell'>"
             "<section class='surface error-card'>"
-            "<div class='error-icon'>&#128683;</div>"
-            "<p class='eyebrow'>Phishing Warning</p>"
-            f"<h1>{html.escape(assessment.verdict.title())} Site Detected</h1>"
-            f"<p class='lead'>WaterCat blocked this page because it may be a phishing attempt.</p>"
+            f"<div class='error-icon'>{icon}</div>"
+            "<p class='eyebrow'>Security Warning</p>"
+            f"<h1>{html.escape(heading)}</h1>"
+            f"<p class='lead'>{html.escape(lead)}</p>"
             f"<div class='kv-list' style='text-align:left;max-width:600px;margin:16px auto'>"
             f"<div class='kv-row'><span>Target URL</span><b style='overflow-wrap:anywhere'>{html.escape(url)}</b></div>"
             f"<div class='kv-row'><span>Risk Score</span><b>{assessment.score}</b></div>"
@@ -1467,12 +1493,12 @@ class BrowserApp:
             f"</div>"
             f"<ul style='text-align:left;max-width:600px;margin:12px auto;color:var(--muted)'>{reasons_html}</ul>"
             "<div class='action-row center'>"
-            f"<a class='button-link' href='javascript:history.back()'>Go back</a>"
-            f"<a class='button-link' href='internal:phishing-continue?url={encoded_url}'>Continue anyway</a>"
+            f"{primary}"
+            f"{secondary}"
             "</div></section></main>"
         )
-        tab.view.setHtml(self._page_html("Phishing Warning", body, error=True))
-        tab.title = "Phishing Warning"
+        tab.view.setHtml(self._page_html("Security Warning", body, error=True))
+        tab.title = "Security Warning"
         self._update_tab_label(tab)
         self._set_status(f"Phishing blocked: {assessment.score}")
 
@@ -1986,11 +2012,13 @@ class BrowserApp:
         cache_count = self.http_cache.entry_count()
 
         blocked_html = ""
+        trusted_html = ""
         if self._phishing_reputation:
             user_rules = load_user_rules_raw(PHISHING_RULES_PATH) if PHISHING_RULES_PATH.exists() else {}
             user_blocked = set(user_rules.get("blocked_domains", []))
             user_prefixes = list(user_rules.get("blocked_url_prefixes", []))
             user_keywords = set(user_rules.get("suspicious_keywords", []))
+            user_trusted = set(user_rules.get("trusted_hosts", []))
             builtin_blocked = self._phishing_reputation.blocked_domains - user_blocked
 
             def _item_row(label, value, action_url):
@@ -2018,11 +2046,19 @@ class BrowserApp:
             if not user_blocked and not user_prefixes and not user_keywords and not builtin_blocked:
                 blocked_html = "<p style='color:var(--muted)'>No custom rules yet. Add blocked domains, URL prefixes, or suspicious keywords below.</p>"
 
+            trusted_html = "<div class='kv-list'>"
+            for th in sorted(user_trusted):
+                trusted_html += _item_row("Trusted host", th, f"internal:phishing-remove-trusted?host={quote_plus(th)}")
+            trusted_html += "</div>"
+            if not user_trusted:
+                trusted_html = "<p style='color:var(--muted)'>No trusted hosts. Add hosts to suppress brand-impersonation warnings for legitimate subdomains.</p>"
+
         phishing_section = ""
         if self._phishing_enabled:
             phishing_section = (
                 "<div class='surface'>"
                 + "<div class='surface-head'><div><p class='section-kicker'>Security</p><h2>Phishing rules</h2></div></div>"
+                + "<p class='section-kicker' style='margin-top:12px'>Blocked rules</p>"
                 + blocked_html
                 + "<form class='settings-form' style='margin-top:14px' action='internal:phishing-add-blocked' method='get'>"
                 + "<label class='field'><span>Block domain</span>"
@@ -2043,6 +2079,24 @@ class BrowserApp:
                 + "<button type='submit'>Add</button>"
                 + "</div></label></form>"
                 + "</div>"
+                + "<div class='surface'>"
+                + "<div class='surface-head'><div><p class='section-kicker'>Trust</p><h2>Trusted hosts</h2></div></div>"
+                + trusted_html
+                + "<form class='settings-form' style='margin-top:8px' action='internal:phishing-add-trusted' method='get'>"
+                + "<label class='field'><span>Trust host</span>"
+                + "<div style='display:flex;gap:8px'>"
+                + "<input name='host' placeholder='trusted.example.com'>"
+                + "<button type='submit'>Add</button>"
+                + "</div></label></form>"
+                + "</div>"
+                + "<div class='surface'>"
+                + "<div class='surface-head'><div><p class='section-kicker'>Safe Browsing</p><h2>Google Safe Browsing</h2></div></div>"
+                + ("<p style='color:var(--green)'>Enabled &mdash; URLs are checked against Google Safe Browsing API.</p>"
+                   if GOOGLE_SAFE_BROWSING_API_KEY else
+                   "<p style='color:var(--muted)'>Disabled. Set <code>BROWSER_GOOGLE_SAFE_BROWSING_API_KEY</code> in your <code>.env</code> to enable.</p>")
+                + "<p class='kv-list' style='font-size:13px;color:var(--muted);margin-top:4px'>"
+                + "Detects malware, social engineering, unwanted software, and potentially harmful applications."
+                + "</p></div>"
             )
 
         body = (
@@ -3023,7 +3077,8 @@ class BrowserApp:
             target = values.get("url", [""])[0]
             if target:
                 decoded = unquote_plus(target)
-                self._phishing_allowlist.add(decoded.lower())
+                host = (urlparse(decoded).hostname or decoded).lower()
+                self._phishing_session_host_allow.add(host)
                 self._navigate(decoded, tab=tab, record_navigation=record_navigation)
             return
         if action == "phishing-add-blocked":
@@ -3082,6 +3137,26 @@ class BrowserApp:
             if keyword:
                 rules = load_user_rules_raw(PHISHING_RULES_PATH)
                 rules["suspicious_keywords"] = [k for k in rules.get("suspicious_keywords", []) if k != keyword]
+                save_user_rules(PHISHING_RULES_PATH, rules)
+                self._phishing_reputation = load_reputation(PHISHING_RULES_PATH)
+            self._show_settings_tab()
+            return
+        if action == "phishing-add-trusted":
+            host = values.get("host", [""])[0].strip()
+            if host:
+                rules = load_user_rules_raw(PHISHING_RULES_PATH)
+                rules.setdefault("trusted_hosts", [])
+                if host not in rules["trusted_hosts"]:
+                    rules["trusted_hosts"].append(host)
+                    save_user_rules(PHISHING_RULES_PATH, rules)
+                    self._phishing_reputation = load_reputation(PHISHING_RULES_PATH)
+            self._show_settings_tab()
+            return
+        if action == "phishing-remove-trusted":
+            host = values.get("host", [""])[0]
+            if host:
+                rules = load_user_rules_raw(PHISHING_RULES_PATH)
+                rules["trusted_hosts"] = [h for h in rules.get("trusted_hosts", []) if h != host]
                 save_user_rules(PHISHING_RULES_PATH, rules)
                 self._phishing_reputation = load_reputation(PHISHING_RULES_PATH)
             self._show_settings_tab()

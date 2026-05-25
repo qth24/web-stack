@@ -8,52 +8,87 @@
   "protected_brands": [
     {
       "name": "PayPal",
-      "domains": ["paypal.com", "paypal.me", "paypalobjects.com"]
+      "domains": ["paypal.com", "paypal.me", "paypalobjects.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": ["paypal.com.vn"]
     },
     {
       "name": "Google",
-      "domains": ["google.com", "accounts.google.com", "mail.google.com", "drive.google.com"]
+      "domains": ["google.com", "accounts.google.com", "mail.google.com", "drive.google.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": ["youtube.com", "gmail.com", "google.com.vn"]
     },
     {
       "name": "Microsoft",
-      "domains": ["microsoft.com", "login.microsoftonline.com", "outlook.com", "live.com", "office.com"]
+      "domains": ["microsoft.com", "login.microsoftonline.com", "outlook.com", "live.com", "office.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": ["xbox.com", "skype.com", "github.com", "microsoft.com.vn"]
     },
     {
       "name": "Apple",
-      "domains": ["apple.com", "icloud.com", "appleid.apple.com"]
+      "domains": ["apple.com", "icloud.com", "appleid.apple.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": ["mac.com", "me.com"]
     },
     {
       "name": "Amazon",
-      "domains": ["amazon.com", "amazon.co.uk", "amazon.de", "amazonaws.com"]
+      "domains": ["amazon.com", "amazon.co.uk", "amazon.de", "amazonaws.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": []
     },
     {
       "name": "Facebook",
-      "domains": ["facebook.com", "fb.com", "messenger.com"]
+      "domains": ["facebook.com", "fb.com", "messenger.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": ["instagram.com", "whatsapp.com"]
+    },
+    {
+      "name": "YouTube",
+      "domains": ["youtube.com", "youtu.be"],
+      "trusted_host_suffixes": [],
+      "related_domains": ["ytimg.com", "googleapis.com"]
     },
     {
       "name": "Netflix",
-      "domains": ["netflix.com"]
+      "domains": ["netflix.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": []
     },
     {
       "name": "Dropbox",
-      "domains": ["dropbox.com"]
+      "domains": ["dropbox.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": []
     },
     {
       "name": "Wells Fargo",
-      "domains": ["wellsfargo.com"]
+      "domains": ["wellsfargo.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": []
     },
     {
       "name": "Chase",
-      "domains": ["chase.com"]
+      "domains": ["chase.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": []
     },
     {
       "name": "Bank of America",
-      "domains": ["bankofamerica.com", "bofa.com"]
+      "domains": ["bankofamerica.com", "bofa.com"],
+      "trusted_host_suffixes": [],
+      "related_domains": []
     }
   ],
   "suspicious_keywords": [
     "login", "verify", "secure", "account", "wallet", "otp", "seed", "recovery",
     "unlock", "restore", "confirm", "validate", "update-payment", "billing",
     "deactivated", "suspended", "limited", "unusual-activity"
-  ]
+  ],
+  "trusted_hosts": [],
+  "external_reputation": {
+    "enabled": false,
+    "provider": null,
+    "timeout_ms": 500,
+    "ttl_seconds": 3600
+  }
 }
