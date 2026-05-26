@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 BROWSER_DIR = Path(__file__).resolve().parents[1]
-ENV_PATH = BROWSER_DIR.parent / ".env"
+ENV_PATHS = (BROWSER_DIR / ".env", BROWSER_DIR.parent / ".env")
 CONFIGURED_KEYS = set(os.environ)
 
 
@@ -64,7 +64,18 @@ def _get_list(name: str, default: list[str]) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-_load_env_file(ENV_PATH)
+for env_path in ENV_PATHS:
+    _load_env_file(env_path)
+
+
+def _browser_path(name: str, default: str) -> Path:
+    raw = _get_str(name, default)
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    if raw.startswith("browser/"):
+        return (BROWSER_DIR.parent / path).resolve()
+    return (BROWSER_DIR / path).resolve()
 
 DNS_HOST = _get_str("BROWSER_DNS_HOST", "127.0.0.1")
 DNS_PORT = _get_int("BROWSER_DNS_PORT", 53)
@@ -109,6 +120,7 @@ HTTP_CACHE_MAX_ENTRY_MB = _get_int("BROWSER_HTTP_CACHE_MAX_ENTRY_MB", 4)
 STATE_DIR = Path(_get_str("BROWSER_STATE_DIR", str(Path.home() / ".mini_web_browser"))).expanduser()
 STATE_PATH = Path(_get_str("BROWSER_STATE_PATH", str(STATE_DIR / "browser_state.json"))).expanduser()
 COOKIE_STATE_PATH = STATE_DIR / "cookies.json"
+BROWSER_DB_PATH = _browser_path("BROWSER_DB_PATH", "data/watercat_browser.db")
 
 ENABLE_PHISHING_DETECTION = _get_bool("BROWSER_ENABLE_PHISHING_DETECTION", True)
 PHISHING_SUSPICIOUS_THRESHOLD = _get_int("BROWSER_PHISHING_SUSPICIOUS_THRESHOLD", 31)

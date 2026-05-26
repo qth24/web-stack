@@ -106,6 +106,7 @@ from browser.core.config import (
     SEARCH_URL,
     STATE_DIR,
     STATE_PATH,
+    BROWSER_DB_PATH,
     BROWSER_THEME,
     SEARCH_ENGINE,
     BROWSER_FONT_SIZE,
@@ -141,6 +142,7 @@ from browser.core.assistant import (
     build_preset_request,
     render_assistant_message_html,
 )
+from browser.core.storage import AuthError, BrowserStorage
 
 
 @dataclass
@@ -383,8 +385,120 @@ class SettingsDialog(QDialog):
         )
 
 
+class AuthDialog(QDialog):
+    def __init__(self, storage: BrowserStorage):
+        super().__init__()
+        self.storage = storage
+        self.user: dict[str, Any] | None = None
+        self.created_user = False
+        self.setWindowTitle("WaterCat Account")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+        title = QLabel("WaterCat Account")
+        title.setObjectName("authTitle")
+        subtitle = QLabel("Sign in only when you want an encrypted browser profile. Local mode works without an account.")
+        subtitle.setWordWrap(True)
+        subtitle.setObjectName("authSubtitle")
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+
+        login_page = QWidget()
+        login_layout = QVBoxLayout(login_page)
+        login_form = QFormLayout()
+        self.login_username = QLineEdit()
+        self.login_username.setPlaceholderText("username")
+        self.login_password = QLineEdit()
+        self.login_password.setPlaceholderText("password")
+        self.login_password.setEchoMode(QLineEdit.EchoMode.Password)
+        login_form.addRow("Username", self.login_username)
+        login_form.addRow("Password", self.login_password)
+        login_layout.addLayout(login_form)
+        self.login_button = QPushButton("Sign In")
+        login_layout.addWidget(self.login_button)
+        self.tabs.addTab(login_page, "Login")
+
+        signup_page = QWidget()
+        signup_layout = QVBoxLayout(signup_page)
+        signup_form = QFormLayout()
+        self.signup_username = QLineEdit()
+        self.signup_username.setPlaceholderText("at least 3 characters")
+        self.signup_display = QLineEdit()
+        self.signup_display.setPlaceholderText("optional")
+        self.signup_password = QLineEdit()
+        self.signup_password.setPlaceholderText("at least 6 characters")
+        self.signup_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.signup_confirm = QLineEdit()
+        self.signup_confirm.setPlaceholderText("repeat password")
+        self.signup_confirm.setEchoMode(QLineEdit.EchoMode.Password)
+        signup_form.addRow("Username", self.signup_username)
+        signup_form.addRow("Display name", self.signup_display)
+        signup_form.addRow("Password", self.signup_password)
+        signup_form.addRow("Confirm", self.signup_confirm)
+        signup_layout.addLayout(signup_form)
+        self.signup_button = QPushButton("Create Encrypted Account")
+        signup_layout.addWidget(self.signup_button)
+        self.tabs.addTab(signup_page, "Sign Up")
+
+        self.message = QLabel("")
+        self.message.setObjectName("authMessage")
+        self.message.setWordWrap(True)
+        layout.addWidget(self.message)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        if self.storage.account_count() == 0:
+            self.tabs.setCurrentIndex(1)
+            self.message.setText("No encrypted account exists yet. Local browsing still works without one.")
+
+        self.login_button.clicked.connect(self._login)
+        self.signup_button.clicked.connect(self._signup)
+        self.login_password.returnPressed.connect(self._login)
+        self.signup_confirm.returnPressed.connect(self._signup)
+
+    def _set_error(self, message: str) -> None:
+        self.message.setText(message)
+
+    def _login(self) -> None:
+        try:
+            self.user = self.storage.authenticate_user(
+                self.login_username.text(),
+                self.login_password.text(),
+            )
+        except AuthError as exc:
+            self._set_error(str(exc))
+            return
+        self.accept()
+
+    def _signup(self) -> None:
+        if self.signup_password.text() != self.signup_confirm.text():
+            self._set_error("Password confirmation does not match.")
+            return
+        try:
+            self.user = self.storage.create_user(
+                self.signup_username.text(),
+                self.signup_password.text(),
+                self.signup_display.text(),
+            )
+        except AuthError as exc:
+            self._set_error(str(exc))
+            return
+        self.created_user = True
+        self.accept()
+
+
 class BrowserApp:
     def __init__(self):
+        self.storage = BrowserStorage(BROWSER_DB_PATH)
+        self.current_user = self.storage.get_or_create_local_user()
+        self._legacy_state = self._read_state()
+        self.storage.migrate_from_state(self.current_user["id"], self._legacy_state)
         self.settings = self._load_settings()
         self.bookmarks = self._load_list("bookmarks", DEFAULT_BOOKMARKS)
         self.shortcuts = self._load_shortcuts(DEFAULT_BOOKMARKS)
@@ -440,6 +554,53 @@ class BrowserApp:
         self._bind_actions()
         self._apply_style()
         self._new_tab(self.settings.home_url)
+        self._save_state()
+
+    def _show_account_dialog(self) -> None:
+        self._save_state()
+        dialog = AuthDialog(self.storage)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.user is None:
+            return
+        self._switch_profile(dialog.user, copy_current=dialog.created_user)
+
+    def _use_local_profile(self) -> None:
+        if self.current_user.get("is_local"):
+            return
+        self._save_state()
+        self.storage.forget_profile_key(self.current_user["id"])
+        self._switch_profile(self.storage.get_or_create_local_user(), copy_current=False)
+
+    def _switch_profile(self, user: dict[str, Any], copy_current: bool = False) -> None:
+        if copy_current:
+            old_settings = self._settings_data()
+            old_bookmarks = list(self.bookmarks)
+            old_shortcuts = list(self.shortcuts)
+            old_history = list(self.history)
+            self.current_user = user
+            user_id = self.current_user["id"]
+            if not self.storage.load_settings(user_id):
+                self.storage.save_settings(user_id, old_settings)
+            if not self.storage.load_bookmarks(user_id):
+                self.storage.save_bookmarks(user_id, old_bookmarks)
+            if not self.storage.load_shortcuts(user_id):
+                self.storage.save_shortcuts(user_id, old_shortcuts)
+            if not self.storage.load_history(user_id):
+                self.storage.save_history(user_id, old_history)
+        else:
+            self.current_user = user
+
+        self.settings = self._load_settings()
+        self.bookmarks = self._load_list("bookmarks", DEFAULT_BOOKMARKS)
+        self.shortcuts = self._load_shortcuts(DEFAULT_BOOKMARKS)
+        self.history = self._load_history()
+        self.dns_client = self._make_dns_client()
+        self.vpn_client = self._make_vpn_client()
+        self._apply_style()
+        self._refresh_side_lists()
+        self._update_account_actions()
+        self._sync_toolbar()
+        mode = "encrypted account" if self.current_user.get("encrypted") else "local profile"
+        self._set_status(f"Using {mode}: {self.current_user.get('display_name')}.")
 
     def _setup_qt_profiles(self) -> None:
         if QWebEngineProfile is None:
@@ -591,6 +752,10 @@ class BrowserApp:
         self.download_action = QAction(self._theme_icon("download"), "Download", self.window)
         self.devtools_action = QAction(self._theme_icon("applications-development"), "DevTools", self.window)
         self.settings_action = QAction("Settings", self.window)
+        self.account_action = QAction("", self.window)
+        self.account_action.setEnabled(False)
+        self.sign_in_action = QAction("Sign In / Sign Up", self.window)
+        self.sign_out_action = QAction("Use Local Profile", self.window)
         self.vpn_check_action = QAction("Check VPN IP", self.window)
         self.ai_assistant_action = QAction(self._theme_icon("dialog-question"), "AI Assistant", self.window)
         self.ai_assistant_action.setCheckable(True)
@@ -638,6 +803,10 @@ class BrowserApp:
         self.menu_button.setToolTip("Open menu")
         self.menu_button.setFixedSize(40, 36)
         self.menu = QMenu(self.menu_button)
+        self.menu.addAction(self.account_action)
+        self.menu.addAction(self.sign_in_action)
+        self.menu.addAction(self.sign_out_action)
+        self.menu.addSeparator()
         self.menu.addAction(self.new_tab_action)
         self.menu.addAction(self.incognito_action)
         self.menu.addSeparator()
@@ -662,6 +831,7 @@ class BrowserApp:
         self.menu_button.setMenu(self.menu)
         self.toolbar.addWidget(self.menu_button)
         self.tabs.setNavigationWidget(self.toolbar)
+        self._update_account_actions()
 
         main_splitter = QSplitter(Qt.Orientation.Vertical)
         main_splitter.setHandleWidth(10)
@@ -848,6 +1018,8 @@ class BrowserApp:
         self.devtools_action.triggered.connect(self._toggle_devtools)
         self.close_devtools_btn.clicked.connect(lambda: self.devtools_frame.hide())
         self.settings_action.triggered.connect(self._open_settings_page)
+        self.sign_in_action.triggered.connect(self._show_account_dialog)
+        self.sign_out_action.triggered.connect(self._use_local_profile)
         self.vpn_check_action.triggered.connect(lambda: self._navigate("internal:vpn-check"))
         self.ai_assistant_action.triggered.connect(lambda checked: self._toggle_assistant(checked))
         self.vpn_button.toggled.connect(self._set_vpn_enabled)
@@ -1017,6 +1189,19 @@ class BrowserApp:
                 letter-spacing: 0.14em;
                 text-transform: uppercase;
                 color: {c['muted']};
+            }}
+            QLabel#authTitle {{
+                color: {c['text']};
+                font-size: 22px;
+                font-weight: 700;
+            }}
+            QLabel#authSubtitle {{
+                color: {c['muted']};
+                font-size: 13px;
+            }}
+            QLabel#authMessage {{
+                color: {c['error']};
+                font-size: 13px;
             }}
             QLineEdit#urlInput {{
                 color: {c['text']};
@@ -3343,7 +3528,22 @@ class BrowserApp:
         label = tab.title or "New Tab"
         if tab.incognito:
             label = f"Incognito - {label}"
-        self.window.setWindowTitle(f"{label} - WaterCat Browser")
+        display_name = self.current_user.get("display_name") or self.current_user.get("username", "")
+        mode = "Local" if self.current_user.get("is_local") else "Encrypted"
+        self.window.setWindowTitle(f"{label} - WaterCat Browser ({mode}: {display_name})")
+
+    def _update_account_actions(self) -> None:
+        if not hasattr(self, "account_action"):
+            return
+        display_name = self.current_user.get("display_name") or self.current_user.get("username", "")
+        if self.current_user.get("is_local"):
+            self.account_action.setText("Profile: Local (unencrypted SQLite)")
+            self.sign_in_action.setEnabled(True)
+            self.sign_out_action.setEnabled(False)
+            return
+        self.account_action.setText(f"Profile: {display_name} (encrypted)")
+        self.sign_in_action.setEnabled(True)
+        self.sign_out_action.setEnabled(True)
 
     def _update_tab_label(self, tab: BrowserTab):
         for index in range(self.tabs.count()):
@@ -3635,8 +3835,9 @@ class BrowserApp:
         self.status_bar.showMessage(msg)
 
     def _load_settings(self) -> BrowserSettings:
-        state = self._read_state()
-        raw = state.get("settings", {})
+        raw = self.storage.load_settings(self.current_user["id"])
+        if not raw:
+            raw = self._legacy_state.get("settings", {}) if hasattr(self, "_legacy_state") else {}
         if not isinstance(raw, dict):
             raw = {}
         return BrowserSettings(
@@ -3678,15 +3879,22 @@ class BrowserApp:
         )
 
     def _load_list(self, key: str, default: list[str]) -> list[str]:
-        state = self._read_state()
-        values = state.get(key, default)
+        if key == "bookmarks":
+            values = self.storage.load_bookmarks(self.current_user["id"])
+            if not values:
+                values = default
+        else:
+            state = self._legacy_state if hasattr(self, "_legacy_state") else self._read_state()
+            values = state.get(key, default)
         if not isinstance(values, list):
             return list(default)
         return [str(value) for value in values if str(value).strip()]
 
     def _load_shortcuts(self, default: list[str]) -> list[Any]:
-        state = self._read_state()
-        values = state.get("shortcuts", default)
+        values = self.storage.load_shortcuts(self.current_user["id"])
+        if not values:
+            state = self._legacy_state if hasattr(self, "_legacy_state") else self._read_state()
+            values = state.get("shortcuts", default)
         if not isinstance(values, list):
             values = default
         result = []
@@ -3703,8 +3911,10 @@ class BrowserApp:
         return result
 
     def _load_history(self) -> list[dict[str, str]]:
-        state = self._read_state()
-        values = state.get("history", [])
+        values = self.storage.load_history(self.current_user["id"])
+        if not values:
+            state = self._legacy_state if hasattr(self, "_legacy_state") else self._read_state()
+            values = state.get("history", [])
         if not isinstance(values, list):
             return []
         result = []
@@ -3727,34 +3937,57 @@ class BrowserApp:
             return {}
         return data if isinstance(data, dict) else {}
 
-    def _save_state(self):
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "settings": {
-                "dns_host": self.settings.dns_host,
-                "dns_port": self.settings.dns_port,
-                "dns_timeout": self.settings.dns_timeout,
-                "http_default_port": self.settings.http_default_port,
-                "https_default_port": self.settings.https_default_port,
-                "enable_dns_cache": self.settings.enable_dns_cache,
-                "enable_http_cache": self.settings.enable_http_cache,
-                "enable_vpn": self.settings.enable_vpn,
-                "vpn_host": self.settings.vpn_host,
-                "vpn_port": self.settings.vpn_port,
-                "vpn_token": self.settings.vpn_token,
-                "vpn_timeout": self.settings.vpn_timeout,
-                "vpn_mode": self.settings.vpn_mode,
-                "vpn_domains": self.settings.vpn_domains,
-                "home_url": self.settings.home_url,
-                "search_url": self.settings.search_url,
-                "theme": self.settings.theme,
-                "font_size": self.settings.font_size,
-                "search_engine": self.settings.search_engine,
-            },
-            "bookmarks": self.bookmarks,
-            "shortcuts": self.shortcuts,
-            "history": self.history,
+    def _settings_data(self) -> dict[str, Any]:
+        return {
+            "dns_host": self.settings.dns_host,
+            "dns_port": self.settings.dns_port,
+            "dns_timeout": self.settings.dns_timeout,
+            "http_default_port": self.settings.http_default_port,
+            "https_default_port": self.settings.https_default_port,
+            "enable_dns_cache": self.settings.enable_dns_cache,
+            "enable_http_cache": self.settings.enable_http_cache,
+            "enable_vpn": self.settings.enable_vpn,
+            "vpn_host": self.settings.vpn_host,
+            "vpn_port": self.settings.vpn_port,
+            "vpn_token": self.settings.vpn_token,
+            "vpn_timeout": self.settings.vpn_timeout,
+            "vpn_mode": self.settings.vpn_mode,
+            "vpn_domains": self.settings.vpn_domains,
+            "home_url": self.settings.home_url,
+            "search_url": self.settings.search_url,
+            "theme": self.settings.theme,
+            "font_size": self.settings.font_size,
+            "search_engine": self.settings.search_engine,
         }
+
+    def _save_state(self):
+        user_id = self.current_user["id"]
+        try:
+            self.storage.save_settings(user_id, self._settings_data())
+            self.storage.save_bookmarks(user_id, self.bookmarks)
+            self.storage.save_shortcuts(user_id, self.shortcuts)
+            self.storage.save_history(user_id, self.history)
+            self.storage.set_user_meta(user_id, "last_saved_at", BrowserStorage.now())
+        except Exception as exc:
+            self._set_status(f"Could not save SQLite state: {exc}")
+
+        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if self.current_user.get("encrypted"):
+            data = {
+                "current_user": self.current_user["username"],
+                "database": str(BROWSER_DB_PATH),
+                "encrypted_profile": True,
+            }
+        else:
+            data = {
+                "settings": self._settings_data(),
+                "bookmarks": self.bookmarks,
+                "shortcuts": self.shortcuts,
+                "history": self.history,
+                "current_user": self.current_user["username"],
+                "database": str(BROWSER_DB_PATH),
+                "encrypted_profile": False,
+            }
         data.update(self.cookie_jar._state_data())
         try:
             with open(STATE_PATH, "w", encoding="utf-8") as file_obj:
@@ -3814,6 +4047,7 @@ class BrowserApp:
 def main():
     app = QApplication(sys.argv)
     browser = BrowserApp()
+    app.aboutToQuit.connect(browser.storage.close)
     browser.window.show()
     sys.exit(app.exec())
 

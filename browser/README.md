@@ -15,7 +15,7 @@ From `web-stack` root:
 
 ```bash
 python -m pip install 'PySide6>=6.7'
-cp .env.example .env
+cp browser/.env.example browser/.env
 python browser/gui/browser_gui.py
 ```
 
@@ -53,9 +53,11 @@ Use `browser/.env.example` as the template:
 - `BROWSER_HOME_URL`, `BROWSER_SEARCH_URL`, `BROWSER_DEFAULT_BOOKMARKS`
 - `BROWSER_THEME` (`light` or `dark`)
 - `BROWSER_STATE_DIR` or `BROWSER_STATE_PATH`
+- `BROWSER_DB_PATH` for the SQLite browser database
 
 ## GUI features
 
+- Browser opens with a local unencrypted profile by default; Sign In / Sign Up is available from the menu for encrypted profiles.
 - URL bar accepts full URLs, domains, trailing slashes, and direct IPv4 addresses.
 - Back, Forward, Reload, Home, New Tab with compact toolbar icons.
 - Multi-tab browsing.
@@ -78,9 +80,11 @@ By default, the custom DNS loader is used for `localhost`, `.local` hostnames, a
 
 Mini VPN is not a system-level VPN. It only affects WaterCat's custom-loaded HTTP requests. HTTPS pages and ordinary Qt WebEngine-loaded pages still use the machine network directly.
 
-## Local state
+## Local Database
 
-History, bookmarks, settings, and normal browsing cookies are stored in `~/.mini_web_browser/browser_state.json`.
+Settings, history, bookmarks, and shortcuts are stored in SQLite at `browser/data/watercat_browser.db` by default. The default local profile is readable with normal SQLite tools. Account profiles created through Sign Up store their browser data encrypted in the SQLite payload using the account password.
+
+Normal browsing cookies still use `~/.mini_web_browser/cookies.json`; incognito cookies stay in memory only. Existing JSON state from `~/.mini_web_browser/browser_state.json` is migrated into the local SQLite profile the first time the browser starts.
 
 ## Expected workflow
 
