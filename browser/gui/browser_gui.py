@@ -131,6 +131,7 @@ from browser.core.phishing import (
     merge_assessments,
     get_top_reasons,
     set_external_reputation_lookup,
+    should_run_local_content_analysis,
 )
 from browser.core.assistant import (
     AssistantConfig,
@@ -520,6 +521,8 @@ class BrowserApp:
         if GOOGLE_SAFE_BROWSING_API_KEY and self._phishing_enabled:
             from browser.core.safe_browsing import google_safe_browsing_lookup
             set_external_reputation_lookup(google_safe_browsing_lookup)
+        else:
+            set_external_reputation_lookup(None)
 
         self._ai_config = AssistantConfig(
             enabled=ENABLE_AI_ASSISTANT,
@@ -1475,11 +1478,11 @@ class BrowserApp:
                     if url_assessment.verdict == "phishing":
                         self._show_phishing_warning(tab, parsed.raw, url_assessment)
                         return
+                    tab.phishing_assessment = url_assessment
+                    event.risk_score = url_assessment.score
+                    event.risk_verdict = url_assessment.verdict
+                    event.risk_reasons = list(url_assessment.reasons)
                     if url_assessment.verdict == "suspicious":
-                        event.risk_score = url_assessment.score
-                        event.risk_verdict = url_assessment.verdict
-                        event.risk_reasons = list(url_assessment.reasons)
-                        tab.phishing_assessment = url_assessment
                         self._set_status(f"Suspicious: {url_assessment.score}")
 
             if not self._should_use_custom_loader(parsed.host, parsed.protocol):
@@ -1612,6 +1615,10 @@ class BrowserApp:
             return
         host = (urlparse(tab.current_url).hostname or "").lower()
         if host in self._phishing_session_host_allow:
+            return
+
+        pre_assessment = getattr(tab, "phishing_assessment", None)
+        if not should_run_local_content_analysis(pre_assessment):
             return
 
         try:

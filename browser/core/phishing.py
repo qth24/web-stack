@@ -166,6 +166,8 @@ class ThreatAssessment:
     phase: str = "url"
     matched_brand: Optional[str] = None
     trusted_host: bool = False
+    external_verdict: Optional[str] = None
+    external_source: Optional[str] = None
 
 
 @dataclass
@@ -507,7 +509,9 @@ def _brand_token_matches_hostname(hostname: str, reputation: ReputationData) -> 
 
 def _compute_assessment(signals: list[SignalHit], matched_brand: Optional[str],
                         trusted_host: bool, phase: str,
-                        has_critical: bool = False) -> ThreatAssessment:
+                        has_critical: bool = False,
+                        external_verdict: Optional[str] = None,
+                        external_source: Optional[str] = None) -> ThreatAssessment:
     categories = {"identity": 0, "collection": 0, "exfiltration": 0, "technical": 0, "generic": 0}
     category_names = set()
 
@@ -566,6 +570,8 @@ def _compute_assessment(signals: list[SignalHit], matched_brand: Optional[str],
         phase=phase,
         matched_brand=matched_brand,
         trusted_host=trusted_host,
+        external_verdict=external_verdict,
+        external_source=external_source,
     )
 
 
@@ -596,6 +602,9 @@ def assess_url(url: str, reputation: ReputationData) -> ThreatAssessment:
             ))
             return _compute_assessment(signals, matched_brand, trusted_host, "url", has_critical=True)
 
+    external_verdict: Optional[str] = None
+    external_source: Optional[str] = None
+
     if reputation.external_reputation is not None:
         ext = _check_external_reputation(url, host, reputation.external_reputation)
         if ext is not None:
@@ -604,9 +613,11 @@ def assess_url(url: str, reputation: ReputationData) -> ThreatAssessment:
                     id="external_malicious", category="identity", severity="critical",
                     score=100, reason=f"external reputation provider '{ext.source}' flagged as malicious",
                 ))
-                return _compute_assessment(signals, matched_brand, trusted_host, "url", has_critical=True)
+                return _compute_assessment(signals, matched_brand, trusted_host, "url", has_critical=True,
+                                           external_verdict="malicious", external_source=ext.source)
             if ext.verdict == "safe":
-                return _compute_assessment([], matched_brand, trusted_host, "url", has_critical=False)
+                return _compute_assessment([], matched_brand, trusted_host, "url", has_critical=False,
+                                           external_verdict="safe", external_source=ext.source)
 
     if _is_ipv4(host):
         signals.append(SignalHit(
@@ -860,7 +871,15 @@ def merge_assessments(
         phase="merged",
         matched_brand=matched_brand,
         trusted_host=trusted_host,
+        external_verdict=url_assessment.external_verdict,
+        external_source=url_assessment.external_source,
     )
+
+
+def should_run_local_content_analysis(url_assessment: Optional[ThreatAssessment]) -> bool:
+    if url_assessment is None:
+        return True
+    return url_assessment.external_verdict != "safe"
 
 
 _EXTERNAL_REPUTATION_CACHE: dict[str, tuple[float, Optional[ReputationHit]]] = {}

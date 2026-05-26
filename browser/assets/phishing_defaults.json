@@ -86,8 +86,8 @@
   ],
   "trusted_hosts": [],
   "external_reputation": {
-    "enabled": false,
-    "provider": null,
+    "enabled": true,
+    "provider": "google_safebrowsing",
     "timeout_ms": 500,
     "ttl_seconds": 3600
   }

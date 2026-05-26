@@ -1,7 +1,10 @@
 """Unit tests for the phishing detection V2 engine."""
 
+import json
+import os
 import time
 import unittest
+from unittest.mock import patch, MagicMock
 from typing import Optional
 from browser.core.phishing import (
     ThreatAssessment,
@@ -12,6 +15,7 @@ from browser.core.phishing import (
     assess_content,
     merge_assessments,
     get_top_reasons,
+    should_run_local_content_analysis,
     _is_ipv4,
     _normalize_confusable,
     _brand_token_matches_hostname,
@@ -688,7 +692,7 @@ class TestReputationDataHelpers(unittest.TestCase):
         self.assertEqual(rep.find_matching_brand("youtube"), "Google")
 
 
-class TestExternalReputation(unittest.TestCase):
+class TestExternalReputationIntegration(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self._rep = ReputationData(
@@ -758,16 +762,196 @@ class TestExternalReputation(unittest.TestCase):
         self.assertEqual(a.verdict, "safe")
         self.assertEqual(call_count, 0)
 
-    def test_google_safe_browsing_lookup_returns_valid_hit(self):
-        import browser.core.safe_browsing as sb
-        original = getattr(sb, "GOOGLE_SAFE_BROWSING_API_KEY", "")
-        sb.GOOGLE_SAFE_BROWSING_API_KEY = ""
-        try:
+    def test_google_safe_browsing_lookup_no_key_returns_none(self):
+        with patch.dict(os.environ, {}, clear=True):
+            import browser.core.safe_browsing as sb
             result = sb.google_safe_browsing_lookup("http://evil.test/")
             self.assertIsNone(result)
-        finally:
-            sb.GOOGLE_SAFE_BROWSING_API_KEY = original
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestShouldRunLocalContentAnalysis(unittest.TestCase):
+    def test_none_assessment_returns_true(self):
+        self.assertTrue(should_run_local_content_analysis(None))
+
+    def test_no_external_verdict_returns_true(self):
+        a = ThreatAssessment(score=10, verdict="safe")
+        self.assertTrue(should_run_local_content_analysis(a))
+
+    def test_external_malicious_returns_true(self):
+        a = ThreatAssessment(score=100, verdict="phishing",
+                             external_verdict="malicious", external_source="google_safebrowsing")
+        self.assertTrue(should_run_local_content_analysis(a))
+
+    def test_external_safe_returns_false(self):
+        a = ThreatAssessment(score=0, verdict="safe",
+                             external_verdict="safe", external_source="google_safebrowsing")
+        self.assertFalse(should_run_local_content_analysis(a))
+
+
+class TestExternalVerdictFields(unittest.TestCase):
+    def setUp(self):
+        _EXTERNAL_REPUTATION_CACHE.clear()
+        set_external_reputation_lookup(None)
+
+    def tearDown(self):
+        _EXTERNAL_REPUTATION_CACHE.clear()
+        set_external_reputation_lookup(None)
+
+    def test_blocklist_still_blocks_despite_external_safe(self):
+        def safe_lookup(_url: str, _host: str) -> Optional[ReputationHit]:
+            return ReputationHit(source="gsb", verdict="safe", ttl_seconds=60)
+        set_external_reputation_lookup(safe_lookup)
+
+        rep = ReputationData(
+            blocked_domains={"bad-example.com"},
+            blocked_url_prefixes=[],
+            protected_brands=[],
+            suspicious_keywords=set(),
+            trusted_hosts=set(),
+            external_reputation={"enabled": True, "ttl_seconds": 3600, "timeout_ms": 5000},
+        )
+        a = assess_url("http://bad-example.com/page", rep)
+        self.assertEqual(a.verdict, "phishing")
+        self.assertIsNone(a.external_verdict)
+        self.assertIsNone(a.external_source)
+
+    def test_external_safe_sets_verdict_and_source(self):
+        def safe_lookup(_url: str, _host: str) -> Optional[ReputationHit]:
+            return ReputationHit(source="gsb", verdict="safe", ttl_seconds=60)
+        set_external_reputation_lookup(safe_lookup)
+
+        rep = ReputationData(
+            blocked_domains=set(),
+            blocked_url_prefixes=[],
+            protected_brands=[],
+            suspicious_keywords=set(),
+            trusted_hosts=set(),
+            external_reputation={"enabled": True, "ttl_seconds": 3600, "timeout_ms": 5000},
+        )
+        a = assess_url("http://example.com/login", rep)
+        self.assertEqual(a.verdict, "safe")
+        self.assertEqual(a.score, 0)
+        self.assertEqual(a.external_verdict, "safe")
+        self.assertEqual(a.external_source, "gsb")
+
+    def test_external_malicious_sets_verdict_and_source(self):
+        def malicious_lookup(_url: str, _host: str) -> Optional[ReputationHit]:
+            return ReputationHit(source="gsb", verdict="malicious", ttl_seconds=60)
+        set_external_reputation_lookup(malicious_lookup)
+
+        rep = ReputationData(
+            blocked_domains=set(),
+            blocked_url_prefixes=[],
+            protected_brands=[],
+            suspicious_keywords=set(),
+            trusted_hosts=set(),
+            external_reputation={"enabled": True, "ttl_seconds": 3600, "timeout_ms": 5000},
+        )
+        a = assess_url("http://evil.test/phish", rep)
+        self.assertEqual(a.verdict, "phishing")
+        self.assertEqual(a.external_verdict, "malicious")
+        self.assertEqual(a.external_source, "gsb")
+
+    def test_external_unavailable_leaves_fields_none(self):
+        def none_lookup(_url: str, _host: str) -> Optional[ReputationHit]:
+            return None
+        set_external_reputation_lookup(none_lookup)
+
+        rep = ReputationData(
+            blocked_domains=set(),
+            blocked_url_prefixes=[],
+            protected_brands=[],
+            suspicious_keywords=set(),
+            trusted_hosts=set(),
+            external_reputation={"enabled": True, "ttl_seconds": 3600, "timeout_ms": 5000},
+        )
+        a = assess_url("http://192.168.1.1/login", rep)
+        self.assertGreater(a.score, 0)
+        self.assertIsNone(a.external_verdict)
+        self.assertIsNone(a.external_source)
+
+    def test_external_unavailable_cached_avoids_duplicate_lookups(self):
+        call_count = 0
+
+        def counting_lookup(_url: str, _host: str) -> Optional[ReputationHit]:
+            nonlocal call_count
+            call_count += 1
+            return None
+        set_external_reputation_lookup(counting_lookup)
+
+        rep = ReputationData(
+            blocked_domains=set(),
+            blocked_url_prefixes=[],
+            protected_brands=[],
+            suspicious_keywords=set(),
+            trusted_hosts=set(),
+            external_reputation={"enabled": True, "ttl_seconds": 3600, "timeout_ms": 5000},
+        )
+        assess_url("http://cached.test/page", rep)
+        assess_url("http://cached.test/page", rep)
+        self.assertEqual(call_count, 1)
+
+    def test_merge_preserves_external_fields(self):
+        url = ThreatAssessment(
+            score=0, verdict="safe",
+            external_verdict="safe", external_source="gsb",
+        )
+        content = ThreatAssessment(
+            score=25, verdict="suspicious", signals=[
+                SignalHit(id="credential_collection", category="collection", severity="high", score=25, reason="creds"),
+            ]
+        )
+        merged = merge_assessments(url, content)
+        self.assertEqual(merged.external_verdict, "safe")
+        self.assertEqual(merged.external_source, "gsb")
+
+
+class TestGoogleSafeBrowsingClient(unittest.TestCase):
+    def test_200_with_matches_returns_malicious(self):
+        from browser.core.safe_browsing import google_safe_browsing_lookup
+
+        with patch.dict(os.environ, {"BROWSER_GOOGLE_SAFE_BROWSING_API_KEY": "test-key"}, clear=True):
+            response = json.dumps({
+                "matches": [{"threatType": "SOCIAL_ENGINEERING"}]
+            }).encode("utf-8")
+
+            mock_resp = MagicMock()
+            mock_resp.__enter__.return_value = mock_resp
+            mock_resp.read.return_value = response
+
+            with patch("urllib.request.urlopen", return_value=mock_resp):
+                result = google_safe_browsing_lookup("http://evil.test/")
+            self.assertIsNotNone(result)
+            self.assertEqual(result.verdict, "malicious")
+            self.assertEqual(result.source, "google_safebrowsing")
+
+    def test_200_without_matches_returns_safe(self):
+        from browser.core.safe_browsing import google_safe_browsing_lookup
+
+        with patch.dict(os.environ, {"BROWSER_GOOGLE_SAFE_BROWSING_API_KEY": "test-key"}, clear=True):
+            response = b"{}"
+
+            mock_resp = MagicMock()
+            mock_resp.__enter__.return_value = mock_resp
+            mock_resp.read.return_value = response
+
+            with patch("urllib.request.urlopen", return_value=mock_resp):
+                result = google_safe_browsing_lookup("http://safe.test/")
+            self.assertIsNotNone(result)
+            self.assertEqual(result.verdict, "safe")
+            self.assertEqual(result.source, "google_safebrowsing")
+
+    def test_network_failure_returns_none(self):
+        from browser.core.safe_browsing import google_safe_browsing_lookup
+
+        with patch.dict(os.environ, {"BROWSER_GOOGLE_SAFE_BROWSING_API_KEY": "test-key"}, clear=True):
+            with patch("urllib.request.urlopen", side_effect=OSError("network unreachable")):
+                result = google_safe_browsing_lookup("http://evil.test/")
+            self.assertIsNone(result)
+
+    def test_missing_key_returns_none(self):
+        from browser.core.safe_browsing import google_safe_browsing_lookup
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = google_safe_browsing_lookup("http://evil.test/")
+            self.assertIsNone(result)
