@@ -23,16 +23,17 @@ class TestDNSServer(unittest.TestCase):
 
     def _send_query(self, domain: str, timeout: float = 2.0) -> bytes | None:
         from dns.wire import encode_query
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(timeout)
             packet = encode_query(domain.encode())
             sock.sendto(packet, ("127.0.0.1", TEST_PORT))
             data, _ = sock.recvfrom(4096)
-            sock.close()
             return data
         except socket.timeout:
             return None
+        finally:
+            sock.close()
 
     def test_health(self):
         data = self._send_query("myweb.local")

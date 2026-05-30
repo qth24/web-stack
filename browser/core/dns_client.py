@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
-from dnslib import DNSRecord, QTYPE, RCODE
+from dnslib import DNSRecord, QTYPE, RCODE, DNSError as DNSLibError
 
 try:
     from .config import DNS_BUFFER, DNS_HOST, DNS_PORT, DNS_TIMEOUT, ENABLE_DNS_CACHE
@@ -127,6 +127,10 @@ class DNSClient:
                 f"Could not connect to DNS server at "
                 f"{self.server_host}:{self.server_port}"
             )
+        except (DNSLibError, ValueError) as e:
+            raise DNSError(f"DNS query failed for '{domain}': {e}") from e
+        except OSError as e:
+            raise DNSError(f"Socket error for DNS query: {e}") from e
         finally:
             sock.close()
 
