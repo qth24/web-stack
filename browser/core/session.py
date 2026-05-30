@@ -50,14 +50,17 @@ class SessionManager:
     def _request(self, method: str, path: str, body: str = None) -> dict:
         host, port = self._base_url.replace("http://", "").split(":")
         conn = http.client.HTTPConnection(host, int(port), timeout=10)
-        headers = {"Content-Type": "application/json"}
-        if self._token:
-            headers["Cookie"] = f"wc_session={self._token}"
-        conn.request(method, path, body=body, headers=headers)
-        resp = conn.getresponse()
-        resp_data = resp.read()
-        conn.close()
-        return {"status_code": resp.status, "headers": dict(resp.getheaders()), "body": resp_data}
+        try:
+            headers = {"Content-Type": "application/json"}
+            if self._token:
+                headers["Cookie"] = f"wc_session={self._token}"
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            resp_data = resp.read()
+            headers = {k.lower(): v for k, v in resp.getheaders()}
+            return {"status_code": resp.status, "headers": headers, "body": resp_data}
+        finally:
+            conn.close()
 
     def _extract_token(self, resp: dict):
         cookie = resp.get("headers", {}).get("set-cookie", "")

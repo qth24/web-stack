@@ -233,9 +233,11 @@ class HTTPClient:
                 chunk_size = int(chunk_size_hex.split(";")[0].strip(), 16)
             except ValueError:
                 break
-            if chunk_size == 0:
+            if chunk_size <= 0:
                 break
             chunk_start = crlf + 2
+            if chunk_size < 0 or chunk_start + chunk_size > len(raw_body):
+                break
             chunk_end = chunk_start + chunk_size
             result.extend(raw_body[chunk_start:chunk_end])
             pos = chunk_end + 2  # skip trailing \r\n

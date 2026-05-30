@@ -1590,12 +1590,15 @@ class BrowserApp:
             if add_history and not tab.incognito:
                 self._add_history(parsed.raw)
             self._save_state()
-            if self._session.is_authenticated():
-                try:
-                    title = tab.title or ""
-                    self._session.post_history(parsed.raw, title)
-                except Exception:
-                    pass
+            try:
+                if self._session.is_authenticated():
+                    try:
+                        title = tab.title or ""
+                        self._session.post_history(parsed.raw, title)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             self._set_status(f"{event.status} | {event.duration_ms}ms")
         finally:
             self._refresh_all()
@@ -1603,7 +1606,7 @@ class BrowserApp:
 
     def _handle_form_submission(self, url: str, tab):
         try:
-            payload = base64.b64decode(url[15:]).decode("utf-8")
+            payload = base64.b64decode(url[16:]).decode("utf-8")
             data = json.loads(payload)
             method = data.get("method", "GET")
             form_url = data.get("url", "")
