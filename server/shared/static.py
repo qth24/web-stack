@@ -1,10 +1,11 @@
-"""Static file serving with in-memory cache."""
+"""Static file serving with path-traversal protection."""
 import os
 import hashlib
 from server.shared.mime import get_mime_type
 from server.shared.response import Response
 
 PUBLIC_DIR: str | None = None
+MAX_FILE_SIZE = 16 * 1024 * 1024
 
 
 def set_public_dir(path: str):
@@ -20,14 +21,17 @@ def serve_static(target: str) -> Response | None:
     clean = os.path.normpath(target.lstrip("/"))
     filepath = os.path.join(PUBLIC_DIR, clean)
     real = os.path.realpath(filepath)
-    if not real.startswith(os.path.realpath(PUBLIC_DIR)):
+    real_root = os.path.realpath(PUBLIC_DIR)
+    if os.path.commonpath([real, real_root]) != real_root:
         return Response(403, body=b"Forbidden")
     if not os.path.isfile(real):
         return None
+    if os.path.getsize(real) > MAX_FILE_SIZE:
+        return Response(403, body=b"File too large")
     mime = get_mime_type(real)
     with open(real, "rb") as f:
         content = f.read()
-    etag = '"' + hashlib.md5(content).hexdigest() + '"'
+    etag = '"' + hashlib.sha256(content).hexdigest() + '"'
     return Response(200, body=content, headers={
         "Content-Type": mime,
         "ETag": etag,

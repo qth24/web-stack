@@ -1,4 +1,5 @@
 """MIME type lookup by file extension."""
+import os
 
 MIME_TYPES = {
     ".css": "text/css; charset=utf-8",
@@ -14,7 +15,5 @@ MIME_TYPES = {
 
 def get_mime_type(file_path: str) -> str:
     """Return MIME type for a file path based on extension."""
-    for ext, mime in MIME_TYPES.items():
-        if file_path.lower().endswith(ext):
-            return mime
-    return "application/octet-stream"
+    _, ext = os.path.splitext(file_path.lower())
+    return MIME_TYPES.get(ext, "application/octet-stream")

@@ -74,4 +74,4 @@ def build_response(
     
     if body_iter is not None:
         return head
-    return head + (response_body if body_iter is None else b"")
+    return head + response_body

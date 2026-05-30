@@ -55,10 +55,15 @@ def decode_chunked_body(raw_body: bytes) -> bytes:
         line_end = raw_body.find(b"\r\n", pos)
         if line_end == -1:
             break
-        chunk_size = int(raw_body[pos:line_end], 16)
+        try:
+            chunk_size = int(raw_body[pos:line_end], 16)
+        except ValueError:
+            break
         if chunk_size == 0:
             break
         pos = line_end + 2
+        if pos + chunk_size + 2 > len(raw_body):
+            break
         result.extend(raw_body[pos:pos + chunk_size])
         pos += chunk_size + 2
     return bytes(result)
