@@ -12,6 +12,7 @@ import ssl
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 try:
@@ -164,6 +165,7 @@ class MiniVPNServer:
         self.handler = handler
         self.max_frame_bytes = max(1024, int(max_frame_bytes))
         self._stop_event = threading.Event()
+        self._executor = ThreadPoolExecutor(max_workers=config.MAX_WORKERS)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind((self.host, self.port))
@@ -181,21 +183,18 @@ class MiniVPNServer:
                 if self._stop_event.is_set():
                     break
                 raise
-            threading.Thread(
-                target=self._handle_client,
-                args=(client_socket, client_addr),
-                daemon=True,
-            ).start()
+            self._executor.submit(self._handle_client, client_socket, client_addr)
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._executor.shutdown(wait=True)
         try:
             self.socket.close()
         except OSError:
             pass
 
     def _handle_client(self, client_socket: socket.socket, client_addr) -> None:
-        with client_socket:
+        try:
             client_socket.settimeout(self.handler.read_timeout)
             try:
                 frame = self._read_frame(client_socket)
@@ -211,6 +210,11 @@ class MiniVPNServer:
                     client_socket.sendall(encode_frame(error))
                 except OSError:
                     pass
+        finally:
+            try:
+                client_socket.close()
+            except OSError:
+                pass
 
     def _read_frame(self, client_socket: socket.socket) -> bytes:
         data = bytearray()

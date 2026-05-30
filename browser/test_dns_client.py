@@ -1,11 +1,25 @@
-"""Unit tests for the browser DNS client."""
+"""Unit tests for the browser DNS client (RFC 1035 wire format)."""
 
-import json
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
+from dnslib import A, DNSHeader, DNSQuestion, DNSRecord, QTYPE, RCODE, RR
+
 from browser.core.dns_client import DNSClient, DNSError, DNSResult
+
+
+def _wire_response(ip="127.0.0.1", ttl=30, domain="example.local", rcode=RCODE.NOERROR) -> bytes:
+    header = DNSHeader(
+        id=12345,
+        qr=1, aa=1, ra=0,
+        rcode=rcode,
+    )
+    questions = [DNSQuestion(domain, qtype=QTYPE.A)]
+    rr_list = []
+    if rcode == RCODE.NOERROR:
+        rr_list = [RR(rname=domain, rtype=QTYPE.A, rclass=1, ttl=ttl, rdata=A(ip))]
+    record = DNSRecord(header=header, questions=questions, rr=rr_list)
+    return bytes(record.pack())
 
 
 class FakeSocket:
@@ -24,75 +38,39 @@ class FakeSocket:
         self.sent_address = address
 
     def recvfrom(self, _buffer_size):
-        return self.response_bytes, ("127.0.0.1", 5336)
+        return self.response_bytes, ("127.0.0.1", 53)
 
     def close(self):
         self.closed = True
 
 
-def _response_payload(**overrides) -> bytes:
-    response = {
-        "version": "v1",
-        "id": "req-123",
-        "status": "OK",
-        "domain": "example.local",
-        "qtype": "A",
-        "ip": "127.0.0.1",
-        "ttl": 30,
-    }
-    response.update(overrides)
-    return json.dumps(response).encode("utf-8")
-
-
 class TestDNSClient(unittest.TestCase):
-    def test_query_uses_v1_contract_and_converts_ttl_to_expiry(self):
-        fake_socket = FakeSocket(_response_payload())
-        client = DNSClient(server_host="127.0.0.1", server_port=5336, enable_cache=False)
+    def test_query_uses_wire_format_and_converts_ttl_to_expiry(self):
+        fake_socket = FakeSocket(_wire_response(ip="127.0.0.1", ttl=30))
+        client = DNSClient(server_host="127.0.0.1", server_port=53, enable_cache=False)
 
         with patch("browser.core.dns_client.socket.socket", return_value=fake_socket):
-            with patch("browser.core.dns_client.uuid.uuid4", return_value=SimpleNamespace(hex="req-123")):
-                with patch("browser.core.dns_client.time.time", return_value=1000.0):
-                    result = client.resolve("Example.Local.")
+            with patch("browser.core.dns_client.time.time", return_value=1000.0):
+                result = client.resolve("Example.Local.")
 
         self.assertEqual(result.domain, "example.local")
         self.assertEqual(result.ip, "127.0.0.1")
         self.assertEqual(result.expire_at, 1030.0)
-        sent = json.loads(fake_socket.sent_payload.decode("utf-8"))
-        self.assertEqual(sent["version"], "v1")
-        self.assertEqual(sent["id"], "req-123")
-        self.assertEqual(sent["op"], "resolve")
-        self.assertEqual(sent["domain"], "example.local")
-        self.assertEqual(sent["qtype"], "A")
+        sent_record = DNSRecord.parse(fake_socket.sent_payload)
+        self.assertEqual(len(sent_record.questions), 1)
+        sent_q = sent_record.questions[0]
+        self.assertEqual(str(sent_q.qname).rstrip("."), "example.local")
+        self.assertEqual(sent_q.qtype, QTYPE.A)
 
-    def test_unsupported_response_version_raises(self):
-        fake_socket = FakeSocket(_response_payload(version="v2"))
+    def test_nxdomain_raises(self):
+        fake_socket = FakeSocket(_wire_response(rcode=RCODE.NXDOMAIN))
         client = DNSClient(enable_cache=False)
 
         with patch("browser.core.dns_client.socket.socket", return_value=fake_socket):
-            with patch("browser.core.dns_client.uuid.uuid4", return_value=SimpleNamespace(hex="req-123")):
-                with self.assertRaises(DNSError) as ctx:
-                    client.resolve("example.local")
+            with self.assertRaises(DNSError) as ctx:
+                client.resolve("unknown.local")
 
-        self.assertIn("unsupported protocol version", str(ctx.exception).lower())
-
-    def test_unsupported_qtype_error_is_exposed(self):
-        fake_socket = FakeSocket(
-            _response_payload(
-                status="UNSUPPORTED_QTYPE",
-                qtype="AAAA",
-                ip=None,
-                ttl=None,
-                message="Unsupported qtype: 'AAAA'",
-            )
-        )
-        client = DNSClient(enable_cache=False)
-
-        with patch("browser.core.dns_client.socket.socket", return_value=fake_socket):
-            with patch("browser.core.dns_client.uuid.uuid4", return_value=SimpleNamespace(hex="req-123")):
-                with self.assertRaises(DNSError) as ctx:
-                    client.resolve("example.local")
-
-        self.assertIn("UNSUPPORTED_QTYPE", str(ctx.exception))
+        self.assertIn("error", str(ctx.exception).lower())
 
     def test_cache_hit_returns_without_socket_call(self):
         client = DNSClient(enable_cache=True)
