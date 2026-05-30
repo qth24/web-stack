@@ -2,7 +2,7 @@
 """Start all Mini Web Stack services from the project root.
 
 Usage:
-    python3 start.py             # start all 4 services
+    python3 start.py             # start all 5 services
     python3 start.py --dry-run   # print commands without executing
 """
 
@@ -82,12 +82,28 @@ def main() -> None:
     print(f"{CYAN}[env]{RESET} Loading {env_path}")
     _load_env_file(env_path)
 
+    # --- Check PostgreSQL ---
+    if not os.getenv("SKIP_DB_CHECK"):
+        pg_host = "localhost"
+        pg_port = 5432
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(3)
+        try:
+            s.connect((pg_host, pg_port))
+            s.close()
+            print(f"{GREEN}[pg]{RESET} PostgreSQL ready on {pg_host}:{pg_port}")
+        except (socket.timeout, ConnectionRefusedError, OSError):
+            s.close()
+            print(f"{YELLOW}[pg]{RESET} PostgreSQL not ready on {pg_host}:{pg_port} — set SKIP_DB_CHECK=1 to skip")
+
     # --- Service definitions (start order matters) ---
     services = [
-        ("DNS Server", "dns/server.py"),
-        ("HTTP Server", "http-server/src/server.py"),
-        ("VPN Server", "vpn/vpn_server.py"),
-        ("Browser", "browser/gui/browser_gui.py"),
+        ("DNS Server", "dns", ["-m", "dns.server"]),
+        ("App A", "server", ["-m", "server.main"], {"HTTP_ROLE": "app", "HTTP_PORT": "8081", "HTTP_NODE_ID": "app-a"}),
+        ("App B", "server", ["-m", "server.main"], {"HTTP_ROLE": "app", "HTTP_PORT": "8082", "HTTP_NODE_ID": "app-b"}),
+        ("Gateway", "server", ["-m", "server.main"], {"HTTP_ROLE": "gateway", "HTTP_BACKENDS": "localhost:8081,localhost:8082"}),
+        ("VPN Server", "vpn", ["-m", "vpn.vpn_server"]),
     ]
 
     processes: list = []
@@ -98,26 +114,33 @@ def main() -> None:
     # --- Start services ---
     delay_seconds = 1
 
-    for i, (name, script) in enumerate(services):
+    for i, svc in enumerate(services):
         if i > 0:
             time.sleep(delay_seconds)
 
-        script_path = project_root / script
-        cmd = ["python3", str(script_path)]
+        name = svc[0]
+        working_dir = project_root / svc[1]
+        args = svc[2]
+        env_dict = svc[3] if len(svc) > 3 else {}
 
-        print(f"\n{GREEN}[start]{RESET} {name} ({script})")
+        cmd = [sys.executable] + args
+
+        print(f"\n{GREEN}[start]{RESET} {name} ({svc[1]})")
         print(f"  {BOLD}$ {' '.join(cmd)}{RESET}")
 
         if dry_run:
             continue
 
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(project_root),
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        kwargs = {
+            "cwd": str(working_dir),
+            "start_new_session": True,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if env_dict:
+            kwargs["env"] = {**os.environ, **env_dict}
+
+        proc = subprocess.Popen(cmd, **kwargs)
         processes.append((name, proc))
 
     if dry_run:

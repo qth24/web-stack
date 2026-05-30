@@ -1,0 +1,18 @@
+[Unit]
+Description=Mini Web Stack App Backend %i
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/web-stack
+Environment="HTTP_ROLE=app"
+Environment="HTTP_NODE_ID=app-%i"
+Environment="HTTP_PORT=808%i"
+Environment="DATABASE_URL=postgresql://watercat:watercat@db.local:5432/watercat"
+ExecStart=/usr/bin/python3 -m server.main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

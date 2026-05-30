@@ -1,14 +1,14 @@
 """RFC 1035 binary wire format encode/decode using dnslib."""
 
-import socket as sock_module
+import socket
 from dataclasses import dataclass
-from dnslib import DNSRecord, DNSHeader, DNSQuestion, RR, QTYPE, A as DNS_A
+from dnslib import DNSRecord, DNSHeader, DNSQuestion, RR, QTYPE, DNSError, A as DNS_A
 
 
 @dataclass
 class QueryInfo:
     transaction_id: int
-    domain: bytes
+    domain: str
     qtype: int
     qclass: int
 
@@ -27,11 +27,11 @@ def decode_query(packet: bytes) -> QueryInfo | None:
         domain_str = str(q.qname).rstrip(".")
         return QueryInfo(
             transaction_id=record.header.id,
-            domain=domain_str.encode("ascii"),
+            domain=domain_str,
             qtype=q.qtype,
             qclass=q.qclass,
         )
-    except Exception:
+    except (DNSError, ValueError):
         return None
 
 
@@ -41,7 +41,9 @@ def encode_response(
 ) -> bytes:
     rrs = []
     for name, rtype, rclass, ttl, rdata in answers:
-        rdata_obj = DNS_A(sock_module.inet_ntoa(rdata)) if rtype == QTYPE.A else rdata
+        if rtype != QTYPE.A:
+            raise ValueError(f"Unsupported rtype: {rtype} (only A records supported)")
+        rdata_obj = DNS_A(socket.inet_ntoa(rdata))
         rrs.append(RR(
             rname=name.decode("ascii"),
             rtype=rtype,
@@ -56,7 +58,7 @@ def encode_response(
     )
     record = DNSRecord(
         header=header,
-        questions=[DNSQuestion(info.domain.decode("ascii"), qtype=info.qtype, qclass=info.qclass)],
+        questions=[DNSQuestion(info.domain, qtype=info.qtype, qclass=info.qclass)],
         rr=rrs,
     )
     return bytes(record.pack())
@@ -70,6 +72,6 @@ def encode_error(info: QueryInfo, rcode: int) -> bytes:
     )
     record = DNSRecord(
         header=header,
-        questions=[DNSQuestion(info.domain.decode("ascii"), qtype=info.qtype, qclass=info.qclass)],
+        questions=[DNSQuestion(info.domain, qtype=info.qtype, qclass=info.qclass)],
     )
     return bytes(record.pack())

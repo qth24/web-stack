@@ -31,5 +31,19 @@
         <p><code>GET /health</code> returns a JSON health check.</p>
       </section>
     </main>
+    <div id="upstream-badge"></div>
+    <script>
+      var badge = document.getElementById('upstream-badge');
+      badge.style.cssText = 'position:fixed;bottom:10px;right:10px;background:#333;color:#fff;padding:4px 12px;border-radius:4px;font-size:12px;z-index:9999';
+      badge.innerText = 'Server: loading...';
+      fetch('/status')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          badge.innerText = 'Server: ' + (data.node || 'unknown');
+        })
+        .catch(function() {
+          badge.innerText = 'Server: standalone';
+        });
+    </script>
   </body>
 </html>

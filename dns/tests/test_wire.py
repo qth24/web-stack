@@ -1,5 +1,6 @@
 import unittest
 import struct
+from dnslib import DNSRecord
 from dns.wire import encode_query, decode_query, encode_response, encode_error, QueryInfo
 
 
@@ -25,7 +26,7 @@ class TestWireProtocol(unittest.TestCase):
         packet = encode_query(self.domain, self.qtype_a)
         info = decode_query(packet)
         self.assertIsNotNone(info)
-        self.assertEqual(info.domain, b"example.com")
+        self.assertEqual(info.domain, "example.com")
         self.assertEqual(info.qtype, self.qtype_a)
         self.assertEqual(info.qclass, self.qclass_in)
 
@@ -34,12 +35,11 @@ class TestWireProtocol(unittest.TestCase):
         self.assertIsNone(info)
 
     def test_decode_query_extracts_transaction_id(self):
-        from dnslib import DNSRecord
         q = DNSRecord.question("test.local")
         packet = bytes(q.pack())
         info = decode_query(packet)
         self.assertEqual(info.transaction_id, q.header.id)
-        self.assertEqual(info.domain, b"test.local")
+        self.assertEqual(info.domain, "test.local")
 
     def test_encode_response_builds_answer(self):
         packet = encode_query(self.domain, self.qtype_a)
@@ -48,15 +48,17 @@ class TestWireProtocol(unittest.TestCase):
         self.assertGreater(len(resp), len(packet))
 
     def test_encode_response_includes_answers(self):
-        info = QueryInfo(1234, b"myweb.local", 1, 1)
+        info = QueryInfo(1234, "myweb.local", 1, 1)
         resp = encode_response(info, [(b"myweb.local", 1, 1, 60, b"\x0a\xb2\x34\x80")])
-        record = decode_query(resp)
-        self.assertIsNotNone(record)
+        record = DNSRecord.parse(resp)
+        self.assertTrue(len(record.rr) > 0)
+        self.assertEqual(str(record.rr[0].rdata), "10.178.52.128")
 
     def test_encode_error_returns_nxdomain(self):
-        info = QueryInfo(42, b"missing.local", 1, 1)
+        info = QueryInfo(42, "missing.local", 1, 1)
         packet = encode_error(info, 3)
-        self.assertGreater(len(packet), 12)
+        record = DNSRecord.parse(packet)
+        self.assertEqual(record.header.rcode, 3)
 
 
 if __name__ == "__main__":

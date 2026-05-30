@@ -1,6 +1,9 @@
 """Static authoritative DNS resolver."""
 
 import json
+import re
+
+_IPV4_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 
 
 class StaticResolver:
@@ -11,9 +14,16 @@ class StaticResolver:
         self._zone: dict[str, tuple[str, int]] = {}
         for domain, value in raw.items():
             if isinstance(value, str):
-                self._zone[domain] = (value, 300)
+                ip = value
+                ttl = 300
             elif isinstance(value, dict):
-                self._zone[domain] = (value.get("ip", ""), value.get("ttl", 300))
+                ip = value.get("ip", "")
+                ttl = value.get("ttl", 300)
+            else:
+                continue
+            if not ip or not _IPV4_RE.match(ip):
+                continue
+            self._zone[domain] = (ip, ttl)
 
     def resolve(self, domain: str) -> tuple[str, int] | None:
         return self._zone.get(domain.lower(), None)

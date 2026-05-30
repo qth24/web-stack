@@ -1,0 +1,16 @@
+[Unit]
+Description=Mini Web Stack DNS Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/web-stack
+ExecStart=/usr/bin/python3 -m dns.server
+Restart=always
+RestartSec=5
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

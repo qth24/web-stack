@@ -1,0 +1,14 @@
+[Unit]
+Description=Mini Web Stack VPN Tunnel
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/web-stack
+ExecStart=/usr/bin/python3 -m vpn.vpn_server
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

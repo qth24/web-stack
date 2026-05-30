@@ -1,0 +1,19 @@
+[Unit]
+Description=Mini Web Stack Gateway
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/web-stack
+Environment="HTTP_ROLE=gateway"
+Environment="HTTP_NODE_ID=gateway-1"
+Environment="HTTP_BACKENDS=192.168.1.10:8081,192.168.1.11:8082"
+Environment="TLS_CERT_PATH=/etc/letsencrypt/live/example.com/fullchain.pem"
+Environment="TLS_KEY_PATH=/etc/letsencrypt/live/example.com/privkey.pem"
+ExecStart=/usr/bin/python3 -m server.main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
