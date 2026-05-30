@@ -8,6 +8,19 @@ import http.client
 from server.gateway.server import GatewayServer
 
 
+def _wait_for_server(host: str, port: int, deadline: float):
+    while time.time() < deadline:
+        try:
+            s = socket.socket()
+            s.settimeout(0.5)
+            s.connect((host, port))
+            s.close()
+            return
+        except (ConnectionRefusedError, OSError):
+            time.sleep(0.05)
+    raise RuntimeError(f"Server {host}:{port} did not start within deadline")
+
+
 class EchoHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
@@ -69,7 +82,7 @@ class TestGatewayServer(unittest.TestCase):
             target=cls._gateway.start, daemon=True
         )
         cls._gateway_thread.start()
-        time.sleep(0.3)
+        _wait_for_server("127.0.0.1", cls._gateway_port, time.time() + 5)
 
     @classmethod
     def tearDownClass(cls):

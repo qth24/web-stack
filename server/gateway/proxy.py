@@ -37,10 +37,14 @@ def proxy_request(raw_request: bytes, pool: BackendPool, node_id: str) -> Respon
 
 def _inject_header(raw: bytes, header_line: str) -> bytes:
     separator = b"\r\n\r\n"
-    if separator in raw:
-        headers, rest = raw.split(separator, 1)
-        return headers + b"\r\n" + header_line.encode() + separator + rest
-    return raw
+    if separator not in raw:
+        return raw
+    headers_part, rest = raw.split(separator, 1)
+    lines = headers_part.split(b"\r\n")
+    header_name = header_line.split(":", 1)[0].strip().lower().encode()
+    filtered = [line for line in lines
+                if b":" not in line or line.split(b":", 1)[0].strip().lower() != header_name]
+    return b"\r\n".join(filtered) + b"\r\n" + header_line.encode() + separator + rest
 
 
 def _read_response(sock: socket.socket) -> bytes:

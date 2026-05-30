@@ -2,9 +2,23 @@ import unittest
 import threading
 import time
 import json
+import socket
 import http.client
 from server.app.db import init_schema
 from server.app.server import AppServer
+
+
+def _wait_for_server(host: str, port: int, deadline: float):
+    while time.time() < deadline:
+        try:
+            s = socket.socket()
+            s.settimeout(0.5)
+            s.connect((host, port))
+            s.close()
+            return
+        except (ConnectionRefusedError, OSError):
+            time.sleep(0.05)
+    raise RuntimeError(f"Server {host}:{port} did not start within deadline")
 
 
 class TestAppServer(unittest.TestCase):
@@ -14,7 +28,7 @@ class TestAppServer(unittest.TestCase):
         cls.server = AppServer("127.0.0.1", 8099, max_workers=4)
         cls._thread = threading.Thread(target=cls.server.start, daemon=True)
         cls._thread.start()
-        time.sleep(0.5)
+        _wait_for_server("127.0.0.1", 8099, time.time() + 5)
 
     @classmethod
     def tearDownClass(cls):

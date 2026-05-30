@@ -2,6 +2,7 @@
 import socket
 import signal
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from server.shared.response import build_response
 from server.shared.security import apply_security_headers
@@ -58,7 +59,7 @@ class AppServer:
                 )
                 conn.sendall(response_bytes)
         except Exception:
-            pass
+            traceback.print_exc()
         finally:
             conn.close()
 

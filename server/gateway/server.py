@@ -3,8 +3,10 @@ import ssl
 import signal
 import threading
 import json
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from server.shared.response import Response, build_response
+from server.shared.security import apply_security_headers
 from server.gateway.proxy import proxy_request
 from server.gateway.balancer import BackendPool
 from server.gateway.metrics import Metrics
@@ -83,13 +85,14 @@ class GatewayServer:
             else:
                 resp = proxy_request(raw, self._pool, self._node_id)
 
+            apply_security_headers(resp.headers)
             conn.sendall(build_response(
                 status_code=resp.status_code,
                 headers=resp.headers,
                 body=resp.body or b"",
             ))
         except Exception:
-            pass
+            traceback.print_exc()
         finally:
             self._metrics.dec_connections()
             conn.close()
