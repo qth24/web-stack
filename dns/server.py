@@ -10,11 +10,11 @@ from dns.config import (
     BIND_HOST,
     PORT,
     RECORDS_PATH,
-    DEFAULT_TTL,
     RATE_LIMIT_MAX_QUERIES,
     RATE_LIMIT_WINDOW_SECONDS,
     MAX_WORKERS,
 )
+from dns.cache import DNSCache
 from dns.wire import QueryInfo, decode_query, encode_response, encode_error
 from dns.resolver import StaticResolver
 from dns.rate_limiter import RateLimiter
@@ -30,7 +30,7 @@ class DNSServer:
         self._executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
         self._shutdown = threading.Event()
         self._sock: socket.socket | None = None
-        self._cache: dict[str, tuple[bytes, float]] = {}
+        self._cache = DNSCache()
 
     def start(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -73,15 +73,18 @@ class DNSServer:
     def _resolve(self, info: QueryInfo) -> bytes | None:
         if info.qtype != QTYPE.A or info.qclass != CLASS.IN:
             return encode_error(info, RCODE.NOTIMP)
-        if not self._resolver.has_domain(info.domain):
-            return encode_error(info, RCODE.NXDOMAIN)
-        cached = self._cache.get(info.domain)
-        if cached and time.time() < cached[1]:
-            return encode_response(info, [(info.domain.encode(), QTYPE.A, CLASS.IN, DEFAULT_TTL, cached[0])])
-        result = self._resolver.resolve(info.domain)
+
+        domain = info.domain.lower()
+        cached = self._cache.get(domain)
+        if cached is not None:
+            remaining_ttl = max(1, int(cached.ttl - (time.time() - cached.created_at)))
+            return encode_response(info, [(domain.encode(), QTYPE.A, CLASS.IN, remaining_ttl, cached.ip)])
+
+        result = self._resolver.resolve(domain)
         if result is None:
             return encode_error(info, RCODE.NXDOMAIN)
+
         ip, ttl = result
         packed_ip = socket.inet_aton(ip)
-        self._cache[info.domain] = (packed_ip, time.time() + ttl)
-        return encode_response(info, [(info.domain.encode(), QTYPE.A, CLASS.IN, ttl, packed_ip)])
+        self._cache.put(domain, packed_ip, ttl)
+        return encode_response(info, [(domain.encode(), QTYPE.A, CLASS.IN, ttl, packed_ip)])

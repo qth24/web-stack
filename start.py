@@ -84,7 +84,7 @@ def main() -> None:
 
     # --- Service definitions (start order matters) ---
     services = [
-        ("DNS Server", "dns/dns_server.py"),
+        ("DNS Server", "dns/server.py"),
         ("HTTP Server", "http-server/src/server.py"),
         ("VPN Server", "vpn/vpn_server.py"),
         ("Browser", "browser/gui/browser_gui.py"),
