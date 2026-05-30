@@ -75,7 +75,7 @@ def handle_login(body: bytes) -> Response:
                        headers={"content-type": "application/json"})
 
     pw_hash, _ = hash_password(password, user["password_salt"])
-    if pw_hash != user["password_hash"]:
+    if not secrets.compare_digest(pw_hash, user["password_hash"]):
         return Response(401, body=json.dumps({"error": "invalid credentials"}).encode(),
                        headers={"content-type": "application/json"})
 
