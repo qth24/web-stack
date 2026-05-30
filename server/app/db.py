@@ -1,15 +1,19 @@
 """PostgreSQL connection pool and schema initialization."""
 import os
+import threading
 from psycopg_pool import ConnectionPool
 
 _pool = None
+_pool_lock = threading.Lock()
 
 
 def get_pool(min_size: int = 2, max_size: int = 8):
     global _pool
     if _pool is None:
-        url = os.getenv("DATABASE_URL", "postgresql://watercat:watercat@localhost:5432/watercat")
-        _pool = ConnectionPool(url, min_size=min_size, max_size=max_size, open=True)
+        with _pool_lock:
+            if _pool is None:
+                url = os.getenv("DATABASE_URL", "postgresql://watercat:watercat@localhost:5432/watercat")
+                _pool = ConnectionPool(url, min_size=min_size, max_size=max_size, open=True)
     return _pool
 
 

@@ -10,7 +10,7 @@ def create_user(username: str, password_hash: str, password_salt: str, display_n
     with pool.connection() as conn:
         result = conn.execute(
             "INSERT INTO users (username, password_hash, password_salt, display_name) VALUES (%s, %s, %s, %s) RETURNING id",
-            (username, password_hash, password_salt, display_name or username),
+            (username, password_hash, password_salt, display_name if display_name is not None else username),
         )
         return result.fetchone()[0]
 
@@ -48,7 +48,7 @@ def get_user_by_id(user_id: int) -> dict | None:
 def create_session(user_id: int, expires_hours: int = 24) -> str:
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    expires_at = datetime.datetime.utcnow() + datetime.timedelta(hours=expires_hours)
+    expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=expires_hours)
     pool = get_pool()
     with pool.connection() as conn:
         conn.execute(
