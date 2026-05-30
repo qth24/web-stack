@@ -12,11 +12,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 
 PASSWORD_ITERATIONS = 210_000
 SCHEMA_VERSION = "2"
 LOCAL_USERNAME = "__local__"
-ENC_PREFIX = "enc:v1:"
+ENC_PREFIX = "enc:v2:"
 
 
 class StorageError(RuntimeError):
@@ -267,36 +269,53 @@ class BrowserStorage:
         return key
 
     @staticmethod
-    def _xor_stream(data: bytes, key: bytes, nonce: bytes) -> bytes:
+    def _decrypt_legacy_xor(ciphertext: bytes, key: bytes, nonce: bytes) -> bytes:
         output = bytearray()
         counter = 0
-        while len(output) < len(data):
+        while len(output) < len(ciphertext):
             block = hashlib.sha256(key + nonce + counter.to_bytes(8, "big")).digest()
             output.extend(block)
             counter += 1
-        return bytes(byte ^ stream for byte, stream in zip(data, output))
+        return bytes(byte ^ stream for byte, stream in zip(ciphertext, output))
 
     def _encrypt_json(self, value: Any, key: bytes) -> str:
-        nonce = secrets.token_bytes(16)
+        nonce = secrets.token_bytes(12)
         plaintext = json.dumps(value, separators=(",", ":")).encode("utf-8")
-        ciphertext = self._xor_stream(plaintext, key, nonce)
-        tag = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
-        packed = base64.urlsafe_b64encode(nonce + ciphertext + tag).decode("ascii")
+        aesgcm = AESGCM(key)
+        ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+        combined = nonce + ciphertext
+        tag = hmac.new(key, combined, "sha256").digest()
+        packed = base64.urlsafe_b64encode(combined + tag).decode("ascii")
         return f"{ENC_PREFIX}{packed}"
 
     def _decrypt_json(self, packed: str, key: bytes) -> Any:
-        if not packed.startswith(ENC_PREFIX):
+        if packed.startswith("enc:v2:"):
+            raw = base64.urlsafe_b64decode(packed[7:].encode("ascii"))
+            if len(raw) < 12 + 32:
+                raise StorageError("Encrypted value is corrupt.")
+            combined = raw[:-32]
+            expected_tag = raw[-32:]
+            actual_tag = hmac.new(key, combined, "sha256").digest()
+            if not hmac.compare_digest(actual_tag, expected_tag):
+                raise StorageError("Encrypted value failed integrity check.")
+            nonce = combined[:12]
+            ciphertext = combined[12:]
+            aesgcm = AESGCM(key)
+            plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+            return json.loads(plaintext.decode("utf-8"))
+        elif packed.startswith("enc:v1:"):
+            raw = base64.urlsafe_b64decode(packed[7:].encode("ascii"))
+            if len(raw) < 48:
+                raise StorageError("Encrypted value is corrupt.")
+            nonce, payload = raw[:16], raw[16:]
+            ciphertext, tag = payload[:-32], payload[-32:]
+            expected = hmac.new(key, nonce + ciphertext, "sha256").digest()
+            if not hmac.compare_digest(tag, expected):
+                raise StorageError("Encrypted value failed integrity check.")
+            plaintext = self._decrypt_legacy_xor(ciphertext, key, nonce)
+            return json.loads(plaintext.decode("utf-8"))
+        else:
             return json.loads(packed)
-        raw = base64.urlsafe_b64decode(packed[len(ENC_PREFIX):].encode("ascii"))
-        if len(raw) < 48:
-            raise StorageError("Encrypted value is corrupt.")
-        nonce, payload = raw[:16], raw[16:]
-        ciphertext, tag = payload[:-32], payload[-32:]
-        expected = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
-        if not hmac.compare_digest(tag, expected):
-            raise StorageError("Encrypted value failed integrity check.")
-        plaintext = self._xor_stream(ciphertext, key, nonce)
-        return json.loads(plaintext.decode("utf-8"))
 
     def _encode_value(self, user_id: int, value: Any) -> str:
         key = self._key_for_user(user_id)
