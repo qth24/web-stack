@@ -3,6 +3,7 @@ http_client.py — Sends HTTP requests via raw TCP sockets and parses responses.
 Supports: GET, POST
 """
 
+import os
 import socket
 import ssl
 from dataclasses import dataclass, field
@@ -116,8 +117,10 @@ class HTTPClient:
             sock.connect((ip, port))
 
             if use_tls:
-                # Use unverified context to disable strict validation (allows self-signed certs, etc.)
-                context = ssl._create_unverified_context()
+                if os.getenv("BROWSER_DEV_INSECURE_TLS", "false").lower() == "true":
+                    context = ssl._create_unverified_context()
+                else:
+                    context = ssl.create_default_context()
                 sock = context.wrap_socket(sock, server_hostname=host)
 
             sock.sendall(request.encode("utf-8"))
@@ -167,8 +170,6 @@ class HTTPClient:
             raise HTTPError(f"Invalid HTTP response format:\n{raw[:200]}")
 
         header_block = header_bytes.decode("iso-8859-1", errors="replace")
-        body = body_bytes.decode("utf-8", errors="replace")
-        raw = raw_bytes.decode("utf-8", errors="replace")
         header_lines = header_block.replace("\r\n", "\n").split("\n")
 
         # Parse status line: "HTTP/1.1 200 OK"
@@ -200,6 +201,13 @@ class HTTPClient:
                 else:
                     headers[clean_key] = clean_val
 
+        # Decode chunked transfer encoding
+        if headers.get("Transfer-Encoding", "").lower() == "chunked":
+            body_bytes = self._decode_chunked_body(body_bytes)
+
+        body = body_bytes.decode("utf-8", errors="replace")
+        raw = raw_bytes.decode("utf-8", errors="replace")
+
         return HTTPResponse(
             status_code=status_code,
             status_text=status_text,
@@ -210,3 +218,25 @@ class HTTPClient:
             body_bytes=body_bytes,
             set_cookie_headers=set_cookie_headers,
         )
+
+    @staticmethod
+    def _decode_chunked_body(raw_body: bytes) -> bytes:
+        """Decodes HTTP chunked transfer encoding."""
+        result = bytearray()
+        pos = 0
+        while pos < len(raw_body):
+            crlf = raw_body.find(b"\r\n", pos)
+            if crlf == -1:
+                break
+            chunk_size_hex = raw_body[pos:crlf].decode("ascii", errors="ignore")
+            try:
+                chunk_size = int(chunk_size_hex.split(";")[0].strip(), 16)
+            except ValueError:
+                break
+            if chunk_size == 0:
+                break
+            chunk_start = crlf + 2
+            chunk_end = chunk_start + chunk_size
+            result.extend(raw_body[chunk_start:chunk_end])
+            pos = chunk_end + 2  # skip trailing \r\n
+        return bytes(result)

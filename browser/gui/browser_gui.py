@@ -143,6 +143,8 @@ from browser.core.assistant import (
     build_preset_request,
     render_assistant_message_html,
 )
+from browser.core.form_handler import inject_form_intercept
+from browser.core.session import SessionManager
 from browser.core.storage import AuthError, BrowserStorage
 
 
@@ -540,6 +542,7 @@ class BrowserApp:
         self.dns_client = self._make_dns_client()
         self.http_client = HTTPClient()
         self.vpn_client = self._make_vpn_client()
+        self._session = SessionManager(base_url=os.getenv("BROWSER_API_URL", "http://localhost:8081"))
 
         self._setup_qt_profiles()
 
@@ -1458,6 +1461,10 @@ class BrowserApp:
                 self._set_status("Ready.")
                 return
 
+            if url.startswith("watercat-form:"):
+                self._handle_form_submission(url, tab)
+                return
+
             if url.startswith("internal:"):
                 self._handle_internal_url(url, tab, record_navigation=record_navigation)
                 return
@@ -1583,10 +1590,44 @@ class BrowserApp:
             if add_history and not tab.incognito:
                 self._add_history(parsed.raw)
             self._save_state()
+            if self._session.is_authenticated():
+                try:
+                    title = tab.title or ""
+                    self._session.post_history(parsed.raw, title)
+                except Exception:
+                    pass
             self._set_status(f"{event.status} | {event.duration_ms}ms")
         finally:
             self._refresh_all()
             self._sync_toolbar()
+
+    def _handle_form_submission(self, url: str, tab):
+        try:
+            payload = base64.b64decode(url[15:]).decode("utf-8")
+            data = json.loads(payload)
+            method = data.get("method", "GET")
+            form_url = data.get("url", "")
+            body = data.get("body", "")
+            content_type = data.get("contentType", "application/x-www-form-urlencoded")
+
+            if method == "GET":
+                self._navigate(form_url, tab)
+            elif method == "POST":
+                parsed = parse_url(form_url)
+                ip = self.dns_client.resolve(parsed.host).ip
+                port = self._effective_port(form_url, parsed.protocol, parsed.host, parsed.port)
+                path = parsed.path
+                response = self.http_client.post(
+                    ip=ip, port=port, path=path, host=parsed.host,
+                    body=body, content_type=content_type,
+                    use_tls=(parsed.protocol == "https")
+                )
+                tab.current_url = form_url
+                tab.view.setHtml(response.body, QUrl(form_url))
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._set_status(f"Form error: {e}")
 
     def _render_response(self, tab: BrowserTab, response: HTTPResponse, ip: str, port: int, path: str, cache_state: str = "miss"):
         content_type = response.headers.get("Content-Type", "").lower()
@@ -2514,6 +2555,10 @@ class BrowserApp:
                         body_bytes=cached_entry.body_bytes,
                         set_cookie_headers=[],
                     )
+                    # Inject form interception into HTML pages
+                    if response.status_code == 200 and response.headers.get("Content-Type", "").startswith("text/html"):
+                        response.body_bytes = inject_form_intercept(response.body_bytes, f"{scheme}://{host}{path}")
+                        response.body = response.body_bytes.decode("utf-8", errors="replace")
                     return response, "hit", request_headers, route_meta
                 elif cached_entry.can_revalidate():
                     if cached_entry.etag:
@@ -2571,6 +2616,11 @@ class BrowserApp:
                 cache_state = "miss"
         else:
             cache_state = "miss"
+
+        # Inject form interception into HTML pages
+        if response.status_code == 200 and response.headers.get("Content-Type", "").startswith("text/html"):
+            response.body_bytes = inject_form_intercept(response.body_bytes, f"{scheme}://{host}{path}")
+            response.body = response.body_bytes.decode("utf-8", errors="replace")
 
         return response, cache_state, request_headers, route_meta
 
