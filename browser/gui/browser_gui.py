@@ -161,7 +161,7 @@ from browser.core.assistant import (
     build_preset_request,
     render_assistant_message_html,
 )
-from browser.core.form_handler import inject_form_intercept
+from browser.core.form_handler import inject_form_intercept, inject_runtime_metadata
 from browser.core.profile_store import EphemeralGuestProfileStore, ProfileStoreError, RemoteEncryptedProfileStore
 from browser.core.session import SessionError, SessionManager
 
@@ -1747,6 +1747,12 @@ class BrowserApp:
 
         if response.is_ok and "text/html" in content_type:
             html_body = await self._load_same_origin_assets(response.body, ip, port, tab)
+            runtime_meta = self._custom_loader_runtime_metadata(response)
+            if runtime_meta:
+                html_body = inject_runtime_metadata(
+                    html_body.encode("utf-8", errors="replace"),
+                    runtime_meta,
+                ).decode("utf-8", errors="replace")
             tab.view.setHtml(html_body, base_url)
             self._run_post_load_phishing(tab)
         elif response.is_ok and self._is_displayable_response(content_type):
@@ -1776,6 +1782,13 @@ class BrowserApp:
             )
         except Exception:
             pass
+
+    def _custom_loader_runtime_metadata(self, response: HTTPResponse) -> dict[str, str]:
+        metadata: dict[str, str] = {}
+        app_node = response.header("x-app-node")
+        if app_node:
+            metadata["appNode"] = app_node
+        return metadata
 
     def _on_content_analysis_done(self, tab: BrowserTab, html: str):
         url = tab.current_url

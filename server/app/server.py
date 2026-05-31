@@ -62,6 +62,7 @@ class AppServer:
             if raw:
                 method, target = request_line_from_raw(raw)
                 resp = await route(raw)
+                _decorate_response_for_node(resp, method, target, self._node_id)
                 apply_security_headers(resp.headers)
                 await _send_response(writer, resp)
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -150,3 +151,19 @@ async def _send_response(writer: asyncio.StreamWriter, resp) -> None:
             writer.write(b"\r\n")
         writer.write(b"0\r\n\r\n")
     await writer.drain()
+
+
+def _decorate_response_for_node(resp, method: str, target: str, node_id: str) -> None:
+    resp.headers["x-app-node"] = node_id
+
+    path = _path_from_target(target)
+    if method == "GET" and path in {"/", "/index.html"}:
+        # Keep the landing page uncached so refreshes force a new balancing decision.
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["set-cookie"] = (
+            f"wc_lb_demo_backend={node_id}; Max-Age=30; Path=/; SameSite=Lax"
+        )
+
+
+def _path_from_target(target: str) -> str:
+    return target.split("?", 1)[0] or "/"
