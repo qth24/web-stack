@@ -231,7 +231,6 @@ python3 -m dns.server
 HTTP_ROLE=app \
 HTTP_PORT=8081 \
 HTTP_NODE_ID=app-a \
-HTTP_PUBLIC_DIR=/absolute/path/to/web-stack/http-server/public \
 python3 -m server.main
 ```
 
@@ -239,7 +238,6 @@ python3 -m server.main
 HTTP_ROLE=app \
 HTTP_PORT=8082 \
 HTTP_NODE_ID=app-b \
-HTTP_PUBLIC_DIR=/absolute/path/to/web-stack/http-server/public \
 python3 -m server.main
 ```
 
