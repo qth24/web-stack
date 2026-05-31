@@ -1,38 +1,54 @@
-import socket
+import asyncio
+from dataclasses import dataclass
 from server.shared.response import Response
 from server.gateway.balancer import BackendPool
 
 
-def proxy_request(raw_request: bytes, pool: BackendPool, node_id: str) -> Response:
+@dataclass
+class ProxyResult:
+    response: Response
+    upstream: str = ""
+    attempts: int = 0
+    error: str = ""
+
+
+async def proxy_request(raw_request: bytes, pool: BackendPool, node_id: str) -> ProxyResult:
     max_retries = len([b for b in pool.status()["backends"]]) + 1
-    for _ in range(max_retries):
+    last_error = ""
+    for attempt in range(1, max_retries + 1):
         upstream = pool.next_backend()
         if upstream is None:
-            return Response(502, body=b"Bad Gateway: no healthy backends")
+            return ProxyResult(
+                response=Response(502, body=b"Bad Gateway: no healthy backends"),
+                attempts=attempt - 1,
+                error=last_error or "no healthy backends",
+            )
 
         host, port_str = upstream.split(":")
         port = int(port_str)
 
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(30)
-            sock.connect((host, port))
-
             modified = _inject_header(raw_request, f"X-Upstream-Node: {node_id}")
-
-            sock.sendall(modified)
-
-            resp_data = _read_response(sock)
-            sock.close()
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=30)
+            writer.write(modified)
+            await writer.drain()
+            resp_data = await _read_response(reader)
+            writer.close()
+            await writer.wait_closed()
 
             resp = _parse_upstream_response(resp_data)
             resp.headers["x-upstream-node"] = node_id
-            return resp
-        except Exception:
+            return ProxyResult(response=resp, upstream=upstream, attempts=attempt)
+        except Exception as exc:
             pool.mark_down(upstream)
+            last_error = f"{type(exc).__name__}: {exc}"
             continue
 
-    return Response(502, body=b"Bad Gateway: all backends failed")
+    return ProxyResult(
+        response=Response(502, body=b"Bad Gateway: all backends failed"),
+        attempts=max_retries,
+        error=last_error or "all backends failed",
+    )
 
 
 def _inject_header(raw: bytes, header_line: str) -> bytes:
@@ -47,7 +63,7 @@ def _inject_header(raw: bytes, header_line: str) -> bytes:
     return b"\r\n".join(filtered) + b"\r\n" + header_line.encode() + separator + rest
 
 
-def _read_response(sock: socket.socket) -> bytes:
+async def _read_response(reader: asyncio.StreamReader) -> bytes:
     data = b""
     headers_complete = False
     content_length = None
@@ -57,7 +73,7 @@ def _read_response(sock: socket.socket) -> bytes:
 
     while True:
         try:
-            chunk = sock.recv(65536)
+            chunk = await asyncio.wait_for(reader.read(65536), timeout=30)
             if not chunk:
                 break
             data += chunk
@@ -85,7 +101,7 @@ def _read_response(sock: socket.socket) -> bytes:
                         break
                 elif no_length:
                     pass
-        except socket.timeout:
+        except TimeoutError:
             break
 
     return data

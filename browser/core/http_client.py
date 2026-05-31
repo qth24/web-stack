@@ -3,8 +3,8 @@ http_client.py — Sends HTTP requests via raw TCP sockets and parses responses.
 Supports: GET, POST
 """
 
+import asyncio
 import os
-import socket
 import ssl
 from dataclasses import dataclass, field
 from typing import Optional
@@ -31,6 +31,12 @@ class HTTPResponse:
     def is_ok(self) -> bool:
         return 200 <= self.status_code < 300
 
+    def header(self, name: str, default: str = "") -> str:
+        for key, value in self.headers.items():
+            if key.lower() == name.lower():
+                return value
+        return default
+
     def __str__(self):
         return (
             f"HTTPResponse(\n"
@@ -54,7 +60,7 @@ class HTTPClient:
     def __init__(self, timeout: float = HTTP_TIMEOUT):
         self.timeout = timeout
 
-    def get(
+    async def get(
         self,
         ip: str,
         port: int,
@@ -65,16 +71,27 @@ class HTTPClient:
     ) -> HTTPResponse:
         """Sends GET request"""
         request = self._build_request("GET", path, host, extra_headers=extra_headers)
-        return self._send(ip, port, request, use_tls=use_tls, host=host)
+        return await self._send(ip, port, request, use_tls=use_tls, host=host)
 
-    def post(self, ip: str, port: int, path: str, host: str, body: str, content_type: str = "application/x-www-form-urlencoded", use_tls: bool = False) -> HTTPResponse:
+    async def post(
+        self,
+        ip: str,
+        port: int,
+        path: str,
+        host: str,
+        body: str,
+        content_type: str = "application/x-www-form-urlencoded",
+        use_tls: bool = False,
+        extra_headers: Optional[dict] = None,
+    ) -> HTTPResponse:
         """Sends POST request with body"""
         extra_headers = {
             "Content-Type": content_type,
             "Content-Length": str(len(body.encode("utf-8"))),
+            **(extra_headers or {}),
         }
         request = self._build_request("POST", path, host, extra_headers, body)
-        return self._send(ip, port, request, use_tls=use_tls, host=host)
+        return await self._send(ip, port, request, use_tls=use_tls, host=host)
 
     def _build_request(
         self,
@@ -108,32 +125,38 @@ class HTTPClient:
         request = "\r\n".join(lines) + "\r\n\r\n" + body
         return request
 
-    def _send(self, ip: str, port: int, request: str, use_tls: bool = False, host: str = "") -> HTTPResponse:
+    async def _send(self, ip: str, port: int, request: str, use_tls: bool = False, host: str = "") -> HTTPResponse:
         """Sends request via TCP and receives entire response"""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(self.timeout)
-
+        writer = None
         try:
-            sock.connect((ip, port))
-
             if use_tls:
                 if os.getenv("BROWSER_DEV_INSECURE_TLS", "false").lower() == "true":
                     context = ssl._create_unverified_context()
                 else:
                     context = ssl.create_default_context()
-                sock = context.wrap_socket(sock, server_hostname=host)
+            else:
+                context = None
 
-            sock.sendall(request.encode("utf-8"))
+            connect_coro = asyncio.open_connection(
+                ip,
+                port,
+                ssl=context,
+                server_hostname=host if use_tls else None,
+            )
+            reader, writer = await asyncio.wait_for(connect_coro, timeout=self.timeout)
+
+            writer.write(request.encode("utf-8"))
+            await writer.drain()
 
             # Receive response - read chunks until connection closes
             chunks = []
             while True:
                 try:
-                    chunk = sock.recv(HTTP_BUFFER)
+                    chunk = await asyncio.wait_for(reader.read(HTTP_BUFFER), timeout=self.timeout)
                     if not chunk:
                         break
                     chunks.append(chunk)
-                except socket.timeout:
+                except TimeoutError:
                     break  # Server silent - assume done
 
             raw_bytes = b"".join(chunks)
@@ -143,10 +166,15 @@ class HTTPClient:
             raise HTTPError(f"Could not connect to HTTP server at {ip}:{port}")
         except ssl.SSLError as e:
             raise HTTPError(f"TLS/SSL Handshake failed: {e}")
-        except socket.timeout:
+        except TimeoutError:
             raise HTTPError(f"HTTP server did not respond after {self.timeout}s")
         finally:
-            sock.close()
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except OSError:
+                    pass
 
     def _parse_response(self, raw_bytes: bytes) -> HTTPResponse:
         """
@@ -202,7 +230,7 @@ class HTTPClient:
                     headers[clean_key] = clean_val
 
         # Decode chunked transfer encoding
-        if headers.get("Transfer-Encoding", "").lower() == "chunked":
+        if self._header_value(headers, "Transfer-Encoding").lower() == "chunked":
             body_bytes = self._decode_chunked_body(body_bytes)
 
         body = body_bytes.decode("utf-8", errors="replace")
@@ -218,6 +246,13 @@ class HTTPClient:
             body_bytes=body_bytes,
             set_cookie_headers=set_cookie_headers,
         )
+
+    @staticmethod
+    def _header_value(headers: dict[str, str], name: str, default: str = "") -> str:
+        for key, value in headers.items():
+            if key.lower() == name.lower():
+                return value
+        return default
 
     @staticmethod
     def _decode_chunked_body(raw_body: bytes) -> bytes:

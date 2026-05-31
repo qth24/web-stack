@@ -5,6 +5,7 @@ Protocol:
   - Receive: RFC 1035 binary response via dnslib.DNSRecord.parse
 """
 
+import asyncio
 import socket
 import time
 import uuid
@@ -54,7 +55,7 @@ class DNSClient:
         self.enable_cache = enable_cache
         self._cache: dict[str, DNSResult] = {}
 
-    def resolve(self, domain: str) -> DNSResult:
+    async def resolve(self, domain: str) -> DNSResult:
         """
         Resolves domain to IP.
         Uses cache if available, otherwise sends UDP query.
@@ -64,6 +65,8 @@ class DNSClient:
             domain = domain[:-1]
         if not domain:
             raise DNSError("Domain cannot be empty")
+        if self._is_ipv4_literal(domain):
+            return DNSResult(domain=domain, ip=domain, from_cache=False, expire_at=None)
 
         # Check cache
         if self.enable_cache:
@@ -79,7 +82,7 @@ class DNSClient:
                 del self._cache[domain]
 
         # Send UDP query
-        result = self._query(domain)
+        result = await self._query(domain)
 
         # Save to cache
         if self.enable_cache:
@@ -87,18 +90,32 @@ class DNSClient:
 
         return result
 
-    def _query(self, domain: str) -> DNSResult:
+    @staticmethod
+    def _is_ipv4_literal(value: str) -> bool:
+        try:
+            socket.inet_aton(value)
+        except OSError:
+            return False
+        return value.count(".") == 3
+
+    async def _query(self, domain: str) -> DNSResult:
         """Sends RFC 1035 binary DNS query via UDP and parses the response."""
+        loop = asyncio.get_running_loop()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(self.timeout)
 
         try:
             query = DNSRecord.question(domain, qtype="A")
             query.header.id = uuid.uuid4().int % 65536
             query_bytes = bytes(query.pack())
-            sock.sendto(query_bytes, (self.server_host, self.server_port))
-
-            data, _ = sock.recvfrom(DNS_BUFFER)
+            if hasattr(sock, "fileno") and hasattr(sock, "setblocking"):
+                sock.setblocking(False)
+                await loop.sock_sendto(sock, query_bytes, (self.server_host, self.server_port))
+                data, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, DNS_BUFFER), timeout=self.timeout)
+            else:
+                def _blocking_roundtrip():
+                    sock.sendto(query_bytes, (self.server_host, self.server_port))
+                    return sock.recvfrom(DNS_BUFFER)
+                data, _ = await asyncio.to_thread(_blocking_roundtrip)
             response = DNSRecord.parse(data)
 
             if response.header.rcode != RCODE.NOERROR:
@@ -117,7 +134,7 @@ class DNSClient:
 
             raise DNSError(f"DNS server returned no A record for '{domain}'")
 
-        except socket.timeout:
+        except TimeoutError:
             raise DNSError(
                 f"DNS server did not respond after {self.timeout}s "
                 f"(check if server is running at {self.server_host}:{self.server_port})"

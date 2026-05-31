@@ -68,21 +68,14 @@ for env_path in ENV_PATHS:
     _load_env_file(env_path)
 
 
-def _browser_path(name: str, default: str) -> Path:
-    raw = _get_str(name, default)
-    path = Path(raw).expanduser()
-    if path.is_absolute():
-        return path
-    if raw.startswith("browser/"):
-        return (BROWSER_DIR.parent / path).resolve()
-    return (BROWSER_DIR / path).resolve()
-
 DNS_HOST = _get_str("BROWSER_DNS_HOST", "127.0.0.1")
 DNS_PORT = _get_int("BROWSER_DNS_PORT", 53)
 DNS_TIMEOUT = _get_float("BROWSER_DNS_TIMEOUT", 3.0)
 DNS_BUFFER = _get_int("BROWSER_DNS_BUFFER", 4096)
 ENABLE_DNS_CACHE = _get_bool("BROWSER_ENABLE_DNS_CACHE", True)
 FORCE_CUSTOM_DNS_ALL_HOSTS = _get_bool("BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS", False)
+WEBENGINE_PROXY_HOST = _get_str("BROWSER_WEBENGINE_PROXY_HOST", "127.0.0.1")
+WEBENGINE_PROXY_PORT = _get_int("BROWSER_WEBENGINE_PROXY_PORT", 8899)
 
 HTTP_TIMEOUT = _get_float("BROWSER_HTTP_TIMEOUT", 5.0)
 HTTP_BUFFER = _get_int("BROWSER_HTTP_BUFFER", 4096)
@@ -101,6 +94,7 @@ VPN_DOMAINS = _get_list("BROWSER_VPN_DOMAINS", [".local", "localhost"])
 
 HOME_URL = _get_str("BROWSER_HOME_URL", "internal:home")
 SEARCH_URL = _get_str("BROWSER_SEARCH_URL", "internal:search?q={query}")
+ACCOUNT_BASE_URL = _get_str("BROWSER_ACCOUNT_BASE_URL", "http://127.0.0.1:8443")
 BROWSER_THEME = _get_str("BROWSER_THEME", "light").lower()
 SEARCH_ENGINE = _get_str("BROWSER_SEARCH_ENGINE", "google").lower()
 BROWSER_FONT_SIZE = _get_int("BROWSER_FONT_SIZE", 16)
@@ -120,7 +114,6 @@ HTTP_CACHE_MAX_ENTRY_MB = _get_int("BROWSER_HTTP_CACHE_MAX_ENTRY_MB", 4)
 STATE_DIR = Path(_get_str("BROWSER_STATE_DIR", str(Path.home() / ".mini_web_browser"))).expanduser()
 STATE_PATH = Path(_get_str("BROWSER_STATE_PATH", str(STATE_DIR / "browser_state.json"))).expanduser()
 COOKIE_STATE_PATH = STATE_DIR / "cookies.json"
-BROWSER_DB_PATH = _browser_path("BROWSER_DB_PATH", "data/watercat_browser.db")
 
 ENABLE_PHISHING_DETECTION = _get_bool("BROWSER_ENABLE_PHISHING_DETECTION", True)
 PHISHING_SUSPICIOUS_THRESHOLD = _get_int("BROWSER_PHISHING_SUSPICIOUS_THRESHOLD", 31)

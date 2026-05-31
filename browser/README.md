@@ -33,7 +33,8 @@ For local development without `sudo`, use the same high UDP port as the DNS serv
 ```env
 BROWSER_DNS_HOST=127.0.0.1
 BROWSER_DNS_PORT=5336
-BROWSER_HTTP_DEFAULT_PORT=8000
+BROWSER_HTTP_DEFAULT_PORT=8443
+BROWSER_ACCOUNT_BASE_URL=http://127.0.0.1:8443
 BROWSER_ENABLE_VPN=false
 BROWSER_VPN_HOST=127.0.0.1
 BROWSER_VPN_PORT=9443
@@ -47,17 +48,18 @@ Use `browser/.env.example` as the template:
 - `BROWSER_DNS_HOST`, `BROWSER_DNS_PORT`, `BROWSER_DNS_TIMEOUT`
 - `BROWSER_ENABLE_DNS_CACHE`
 - `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS`
+- `BROWSER_WEBENGINE_PROXY_HOST`, `BROWSER_WEBENGINE_PROXY_PORT`
 - `BROWSER_HTTP_DEFAULT_PORT`, `BROWSER_HTTP_TIMEOUT`
 - `BROWSER_ENABLE_VPN`, `BROWSER_VPN_HOST`, `BROWSER_VPN_PORT`, `BROWSER_VPN_TOKEN`
 - `BROWSER_VPN_MODE` (`all` or `domains`), `BROWSER_VPN_DOMAINS`
 - `BROWSER_HOME_URL`, `BROWSER_SEARCH_URL`, `BROWSER_DEFAULT_BOOKMARKS`
+- `BROWSER_ACCOUNT_BASE_URL` for `/login`, `/register`, and encrypted profile sync
 - `BROWSER_THEME` (`light` or `dark`)
 - `BROWSER_STATE_DIR` or `BROWSER_STATE_PATH`
-- `BROWSER_DB_PATH` for the SQLite browser database
 
 ## GUI features
 
-- Browser opens with a local unencrypted profile by default; Sign In / Sign Up is available from the menu for encrypted profiles.
+- Browser opens in ephemeral guest mode by default; Sign In and Create Account are available from the menu for the shared encrypted profile.
 - URL bar accepts full URLs, domains, trailing slashes, and direct IPv4 addresses.
 - Back, Forward, Reload, Home, New Tab with compact toolbar icons.
 - Multi-tab browsing.
@@ -76,15 +78,15 @@ Use `browser/.env.example` as the template:
 
 Search uses `BROWSER_SEARCH_URL`. The default value is an internal search page, so normal search input will not cause a DNS error. Settings can show Google/Bing result-page links without opening those pages through custom DNS.
 
-By default, the custom DNS loader is used for `localhost`, `.local` hostnames, and direct IPv4 addresses. Set `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS=true` to route all hostnames through the custom DNS client.
+By default, the custom DNS loader is used for `localhost`, `.local` hostnames, and direct IPv4 addresses. Set `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS=true` to resolve all hostnames through the custom DNS client. Public hostnames still render through Qt WebEngine; the browser uses its local WebEngine proxy for those requests.
 
-Mini VPN is not a system-level VPN. It only affects WaterCat's custom-loaded HTTP requests. HTTPS pages and ordinary Qt WebEngine-loaded pages still use the machine network directly.
+Mini VPN is not a system-level VPN. It always applies to WaterCat's custom-loaded HTTP requests. When `BROWSER_FORCE_CUSTOM_DNS_ALL_HOSTS=true`, the local WebEngine proxy can also route public WebEngine traffic through the Mini VPN when the VPN rules match.
 
-## Local Database
+## Profile Storage
 
-Settings, history, bookmarks, and shortcuts are stored in SQLite at `browser/data/watercat_browser.db` by default. The default local profile is readable with normal SQLite tools. Account profiles created through Sign Up store their browser data encrypted in the SQLite payload using the account password.
+Settings, bookmarks, shortcuts, and synced history are stored in PostgreSQL through the app API. The browser encrypts that profile data client-side before upload, so the server only stores ciphertext plus wrap metadata for the profile key.
 
-Normal browsing cookies still use `~/.mini_web_browser/cookies.json`; incognito cookies stay in memory only. Existing JSON state from `~/.mini_web_browser/browser_state.json` is migrated into the local SQLite profile the first time the browser starts.
+Normal browsing cookies still use `~/.mini_web_browser/cookies.json`; incognito cookies stay in memory only. Device-local browser state such as cookies, cache, and the remembered profile-unlock key still lives under `BROWSER_STATE_DIR`.
 
 ## Expected workflow
 

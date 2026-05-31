@@ -1,17 +1,19 @@
 """Tests for the browser Mini VPN client."""
 
+import asyncio
 import socket
 import threading
 import unittest
 
 from browser.core.vpn_client import VPNClient
-from vpn.protocol import build_success_response, decode_frame, encode_frame
+from vpn.protocol import build_stream_ready_response, build_success_response, decode_frame, encode_frame
 
 
 class FakeVPNServer:
     def __init__(self, response_payload: bytes):
         self.response_payload = response_payload
         self.frame = None
+        self.stream_payload = b""
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind(("127.0.0.1", 0))
@@ -32,7 +34,12 @@ class FakeVPNServer:
             while not data.endswith(b"\n"):
                 data += conn.recv(4096)
             self.frame = decode_frame(data)
-            conn.sendall(encode_frame(build_success_response(self.frame["id"], self.response_payload)))
+            if self.frame["op"] == "stream_connect":
+                conn.sendall(encode_frame(build_stream_ready_response(self.frame["id"])))
+                self.stream_payload = conn.recv(4096)
+                conn.sendall(self.stream_payload.upper())
+            else:
+                conn.sendall(encode_frame(build_success_response(self.frame["id"], self.response_payload)))
         self.socket.close()
 
 
@@ -48,12 +55,14 @@ class TestVPNClient(unittest.TestCase):
             timeout=2,
         )
 
-        response = client.get(
-            ip="127.0.0.1",
-            port=8000,
-            path="/",
-            host="myweb.local",
-            extra_headers={"X-Test": "1"},
+        response = asyncio.run(
+            client.get(
+                ip="127.0.0.1",
+                port=8000,
+                path="/",
+                host="myweb.local",
+                extra_headers={"X-Test": "1"},
+            )
         )
         server.join()
 
@@ -64,6 +73,34 @@ class TestVPNClient(unittest.TestCase):
         self.assertEqual(server.frame["target_host"], "127.0.0.1")
         self.assertEqual(server.frame["target_port"], 8000)
         self.assertEqual(server.frame["server_name"], "myweb.local")
+
+    def test_open_stream_upgrades_after_ready_frame(self):
+        server = FakeVPNServer(b"")
+        server.start()
+        client = VPNClient(
+            host="127.0.0.1",
+            port=server.port,
+            token="demo-token",
+            timeout=2,
+        )
+
+        async def scenario():
+            reader, writer = await client.open_stream("127.0.0.1", 9443)
+            try:
+                writer.write(b"hello")
+                await writer.drain()
+                echoed = await reader.read(5)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+            return echoed
+
+        echoed = asyncio.run(scenario())
+        server.join()
+
+        self.assertEqual(server.frame["op"], "stream_connect")
+        self.assertEqual(server.stream_payload, b"hello")
+        self.assertEqual(echoed, b"HELLO")
 
 
 if __name__ == "__main__":

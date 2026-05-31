@@ -1,78 +1,108 @@
-"""App backend HTTP server with ThreadPoolExecutor."""
-import socket
-import signal
-import threading
+"""App backend HTTP server built on asyncio."""
+import asyncio
+import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
 from server.shared.response import build_response
 from server.shared.security import apply_security_headers
+from server.shared.access_log import log_access, log_event, request_line_from_raw
 from server.app.router import route
 
 
 class AppServer:
-    def __init__(self, host: str, port: int, max_workers: int = 16):
+    def __init__(self, host: str, port: int, max_workers: int = 16, node_id: str = "app"):
         self._host = host
         self._port = port
-        self._executor = ThreadPoolExecutor(max_workers=max_workers)
-        self._shutdown = threading.Event()
-        self._sock: socket.socket | None = None
+        self._max_workers = max_workers
+        self._node_id = node_id
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._shutdown: asyncio.Event | None = None
+        self._server: asyncio.AbstractServer | None = None
 
-    def start(self):
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.bind((self._host, self._port))
-        self._sock.listen(128)
-        self._sock.settimeout(1.0)
-        print(f"[app] listening on {self._host}:{self._port}")
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._loop
+
+    async def start(self):
+        if self._server is not None:
+            return
+        self._loop = asyncio.get_running_loop()
+        self._shutdown = asyncio.Event()
+        self._server = await asyncio.start_server(
+            self._handle_client,
+            self._host,
+            self._port,
+            backlog=128,
+        )
+        log_event("app", f"{self._node_id} listening on {self._host}:{self._port}")
+
+    async def serve_forever(self):
+        await self.start()
+        if self._shutdown is None:
+            return
         try:
-            signal.signal(signal.SIGTERM, lambda s, f: self.stop())
-            signal.signal(signal.SIGINT, lambda s, f: self.stop())
-        except ValueError:
-            pass
-        while not self._shutdown.is_set():
-            try:
-                conn, addr = self._sock.accept()
-                self._executor.submit(self._handle_client, conn, addr)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
+            await self._shutdown.wait()
+        finally:
+            await self.stop()
 
-    def stop(self):
-        self._shutdown.set()
-        self._executor.shutdown(wait=True)
-        if self._sock:
-            self._sock.close()
+    async def stop(self):
+        if self._shutdown is not None:
+            self._shutdown.set()
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+            self._server = None
 
-    def _handle_client(self, conn: socket.socket, addr: tuple):
+    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        started_at = time.perf_counter()
+        peer = writer.get_extra_info("peername")
+        method = "-"
+        target = "-"
         try:
-            conn.settimeout(30)
-            raw = _recv_all(conn)
+            raw = await _recv_all(reader)
             if raw:
-                resp = route(raw)
+                method, target = request_line_from_raw(raw)
+                resp = await route(raw)
                 apply_security_headers(resp.headers)
-                response_bytes = build_response(
-                    status_code=resp.status_code,
-                    headers=resp.headers,
-                    body=resp.body if resp.body is not None else b"",
-                    body_iter=resp.body_iter,
+                await _send_response(writer, resp)
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                log_access(
+                    "app",
+                    peer,
+                    method,
+                    target,
+                    resp.status_code,
+                    duration_ms,
+                    extra=f"node={self._node_id}",
                 )
-                conn.sendall(response_bytes)
         except Exception:
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            log_access(
+                "app",
+                peer,
+                method,
+                target,
+                "ERROR",
+                duration_ms,
+                extra=f"node={self._node_id}",
+            )
             traceback.print_exc()
         finally:
-            conn.close()
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
 
 
-def _recv_all(conn: socket.socket) -> bytes:
+async def _recv_all(reader: asyncio.StreamReader) -> bytes:
     data = b""
     while b"\r\n\r\n" not in data:
         try:
-            chunk = conn.recv(65536)
+            chunk = await asyncio.wait_for(reader.read(65536), timeout=30)
             if not chunk:
                 break
             data += chunk
-        except socket.timeout:
+        except TimeoutError:
             break
 
     if b"\r\n\r\n" not in data:
@@ -92,12 +122,31 @@ def _recv_all(conn: socket.socket) -> bytes:
     body_received = len(data) - body_start
     while body_received < content_length:
         try:
-            chunk = conn.recv(min(65536, content_length - body_received))
+            chunk = await asyncio.wait_for(reader.read(min(65536, content_length - body_received)), timeout=30)
             if not chunk:
                 break
             data += chunk
             body_received += len(chunk)
-        except socket.timeout:
+        except TimeoutError:
             break
 
     return data
+
+
+async def _send_response(writer: asyncio.StreamWriter, resp) -> None:
+    response_head = build_response(
+        status_code=resp.status_code,
+        headers=resp.headers,
+        body=resp.body if resp.body is not None else b"",
+        body_iter=resp.body_iter,
+    )
+    writer.write(response_head)
+    if resp.body_iter is not None:
+        for chunk in resp.body_iter:
+            if not chunk:
+                continue
+            writer.write(f"{len(chunk):X}\r\n".encode("ascii"))
+            writer.write(chunk)
+            writer.write(b"\r\n")
+        writer.write(b"0\r\n\r\n")
+    await writer.drain()

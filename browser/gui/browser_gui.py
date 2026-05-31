@@ -1,3 +1,4 @@
+import asyncio
 import html
 import json
 import os
@@ -5,6 +6,7 @@ import re
 import socket
 import sys
 import time
+import traceback
 import base64
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,8 +18,12 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 try:
-    from PySide6.QtCore import QSize, Qt, QTimer, QUrl
+    from PySide6.QtCore import QObject, QSize, Qt, QTimer, QUrl, Signal, Slot
     from PySide6.QtGui import QAction, QColor, QIcon
+    try:
+        from PySide6.QtNetwork import QNetworkProxy
+    except ImportError:
+        QNetworkProxy = None
     try:
         from PySide6.QtWebEngineCore import QWebEnginePage
     except ImportError:
@@ -27,6 +33,10 @@ try:
     except ImportError:
         QWebEngineProfile = None
         QWebEngineCookieStore = None
+    try:
+        from PySide6.QtWebChannel import QWebChannel
+    except ImportError:
+        QWebChannel = None
     from PySide6.QtWebEngineWidgets import QWebEngineView
     from PySide6.QtWidgets import (
         QAbstractItemView,
@@ -69,8 +79,14 @@ except ImportError:
     print("Install with: python -m pip install PySide6")
     raise SystemExit(1)
 
+try:
+    from qasync import QEventLoop
+except ImportError:
+    QEventLoop = None
+
 from browser.core.config import (
     CONFIGURED_KEYS,
+    ACCOUNT_BASE_URL,
     COOKIE_STATE_PATH,
     DEFAULT_BOOKMARKS,
     DNS_HOST,
@@ -106,15 +122,17 @@ from browser.core.config import (
     SEARCH_URL,
     STATE_DIR,
     STATE_PATH,
-    BROWSER_DB_PATH,
     BROWSER_THEME,
     SEARCH_ENGINE,
     BROWSER_FONT_SIZE,
+    WEBENGINE_PROXY_HOST,
+    WEBENGINE_PROXY_PORT,
 )
 from browser.core.dns_client import DNSClient, DNSError
 from browser.core.host_routing import effective_port_for_host, is_ipv4_address, should_use_custom_dns
 from browser.core.http_client import HTTPClient, HTTPError, HTTPResponse
 from browser.core.vpn_client import VPNClient, VPNError
+from browser.core.webengine_proxy import LocalWebEngineProxy
 from browser.core.url_parser import URLParseError, parse_url
 from browser.core.cookies import CookieJar
 from browser.core.http_cache import HTTPCache
@@ -144,8 +162,8 @@ from browser.core.assistant import (
     render_assistant_message_html,
 )
 from browser.core.form_handler import inject_form_intercept
-from browser.core.session import SessionManager
-from browser.core.storage import AuthError, BrowserStorage
+from browser.core.profile_store import EphemeralGuestProfileStore, ProfileStoreError, RemoteEncryptedProfileStore
+from browser.core.session import SessionError, SessionManager
 
 
 @dataclass
@@ -198,6 +216,8 @@ class NetworkEvent:
 class BrowserTab:
     view: QWebEngineView
     page: Any = None
+    auth_bridge: Any = None
+    web_channel: Any = None
     current_url: str = ""
     title: str = "New Tab"
     icon: Optional[QIcon] = None
@@ -208,6 +228,20 @@ class BrowserTab:
     incognito: bool = False
     incognito_jar_id: int = 0
     phishing_assessment: Any = None
+
+
+class WaterCatAuthBridge(QObject if "QObject" in globals() else object):
+    authResult = Signal(str) if "Signal" in globals() else None
+
+    def __init__(self, app: "BrowserApp", tab: BrowserTab):
+        if "QObject" in globals():
+            super().__init__()
+        self.browser_app = app
+        self.browser_tab = tab
+
+    @Slot(str)
+    def submitAuth(self, payload: str) -> None:
+        self.browser_app._spawn_task(self.browser_app._complete_account_auth(self.browser_tab, payload))
 
 
 class BrowserPage(QWebEnginePage if QWebEnginePage else object):
@@ -388,120 +422,12 @@ class SettingsDialog(QDialog):
         )
 
 
-class AuthDialog(QDialog):
-    def __init__(self, storage: BrowserStorage):
-        super().__init__()
-        self.storage = storage
-        self.user: dict[str, Any] | None = None
-        self.created_user = False
-        self.setWindowTitle("WaterCat Account")
-        self.setModal(True)
-        self.setMinimumWidth(420)
-
-        layout = QVBoxLayout(self)
-        title = QLabel("WaterCat Account")
-        title.setObjectName("authTitle")
-        subtitle = QLabel("Sign in only when you want an encrypted browser profile. Local mode works without an account.")
-        subtitle.setWordWrap(True)
-        subtitle.setObjectName("authSubtitle")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
-
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-
-        login_page = QWidget()
-        login_layout = QVBoxLayout(login_page)
-        login_form = QFormLayout()
-        self.login_username = QLineEdit()
-        self.login_username.setPlaceholderText("username")
-        self.login_password = QLineEdit()
-        self.login_password.setPlaceholderText("password")
-        self.login_password.setEchoMode(QLineEdit.EchoMode.Password)
-        login_form.addRow("Username", self.login_username)
-        login_form.addRow("Password", self.login_password)
-        login_layout.addLayout(login_form)
-        self.login_button = QPushButton("Sign In")
-        login_layout.addWidget(self.login_button)
-        self.tabs.addTab(login_page, "Login")
-
-        signup_page = QWidget()
-        signup_layout = QVBoxLayout(signup_page)
-        signup_form = QFormLayout()
-        self.signup_username = QLineEdit()
-        self.signup_username.setPlaceholderText("at least 3 characters")
-        self.signup_display = QLineEdit()
-        self.signup_display.setPlaceholderText("optional")
-        self.signup_password = QLineEdit()
-        self.signup_password.setPlaceholderText("at least 6 characters")
-        self.signup_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.signup_confirm = QLineEdit()
-        self.signup_confirm.setPlaceholderText("repeat password")
-        self.signup_confirm.setEchoMode(QLineEdit.EchoMode.Password)
-        signup_form.addRow("Username", self.signup_username)
-        signup_form.addRow("Display name", self.signup_display)
-        signup_form.addRow("Password", self.signup_password)
-        signup_form.addRow("Confirm", self.signup_confirm)
-        signup_layout.addLayout(signup_form)
-        self.signup_button = QPushButton("Create Encrypted Account")
-        signup_layout.addWidget(self.signup_button)
-        self.tabs.addTab(signup_page, "Sign Up")
-
-        self.message = QLabel("")
-        self.message.setObjectName("authMessage")
-        self.message.setWordWrap(True)
-        layout.addWidget(self.message)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        if self.storage.account_count() == 0:
-            self.tabs.setCurrentIndex(1)
-            self.message.setText("No encrypted account exists yet. Local browsing still works without one.")
-
-        self.login_button.clicked.connect(self._login)
-        self.signup_button.clicked.connect(self._signup)
-        self.login_password.returnPressed.connect(self._login)
-        self.signup_confirm.returnPressed.connect(self._signup)
-
-    def _set_error(self, message: str) -> None:
-        self.message.setText(message)
-
-    def _login(self) -> None:
-        try:
-            self.user = self.storage.authenticate_user(
-                self.login_username.text(),
-                self.login_password.text(),
-            )
-        except AuthError as exc:
-            self._set_error(str(exc))
-            return
-        self.accept()
-
-    def _signup(self) -> None:
-        if self.signup_password.text() != self.signup_confirm.text():
-            self._set_error("Password confirmation does not match.")
-            return
-        try:
-            self.user = self.storage.create_user(
-                self.signup_username.text(),
-                self.signup_password.text(),
-                self.signup_display.text(),
-            )
-        except AuthError as exc:
-            self._set_error(str(exc))
-            return
-        self.created_user = True
-        self.accept()
-
-
 class BrowserApp:
     def __init__(self):
-        self.storage = BrowserStorage(BROWSER_DB_PATH)
-        self.current_user = self.storage.get_or_create_local_user()
+        self.profile_store: EphemeralGuestProfileStore | RemoteEncryptedProfileStore = EphemeralGuestProfileStore(DEFAULT_BOOKMARKS)
+        self.current_user = dict(self.profile_store.current_user)
+        self._profile_cache = self.profile_store.load_profile_data()
         self._legacy_state = self._read_state()
-        self.storage.migrate_from_state(self.current_user["id"], self._legacy_state)
         self.settings = self._load_settings()
         self.bookmarks = self._load_list("bookmarks", DEFAULT_BOOKMARKS)
         self.shortcuts = self._load_shortcuts(DEFAULT_BOOKMARKS)
@@ -514,6 +440,7 @@ class BrowserApp:
         self._incognito_jars: dict[int, CookieJar] = {}
         self._normal_profile: Any = None
         self._qt_cookie_store: Any = None
+        self._webengine_proxy: LocalWebEngineProxy | None = None
 
         self.http_cache = HTTPCache(STATE_DIR / "http_cache", HTTP_CACHE_MAX_MB, HTTP_CACHE_MAX_ENTRY_MB)
         self._phishing_enabled = ENABLE_PHISHING_DETECTION
@@ -542,7 +469,23 @@ class BrowserApp:
         self.dns_client = self._make_dns_client()
         self.http_client = HTTPClient()
         self.vpn_client = self._make_vpn_client()
-        self._session = SessionManager(base_url=os.getenv("BROWSER_API_URL", "http://localhost:8081"))
+        if FORCE_CUSTOM_DNS_ALL_HOSTS:
+            self._webengine_proxy = LocalWebEngineProxy(
+                bind_host=WEBENGINE_PROXY_HOST,
+                bind_port=WEBENGINE_PROXY_PORT,
+                dns_client_factory=lambda: self.dns_client,
+                vpn_client_factory=lambda: self.vpn_client,
+                should_use_vpn=self._should_use_vpn,
+            )
+        self._session = SessionManager(
+            base_url=ACCOUNT_BASE_URL,
+            dns_client=self.dns_client,
+            http_client=self.http_client,
+            cookie_jar=self.cookie_jar,
+            http_default_port=self.settings.http_default_port,
+            https_default_port=self.settings.https_default_port,
+            on_cookies_changed=self._on_session_cookies_changed,
+        )
 
         self._setup_qt_profiles()
 
@@ -550,6 +493,10 @@ class BrowserApp:
         self.window.setWindowTitle("WaterCat Browser")
         self.window.resize(1240, 780)
         self.window.setMinimumSize(980, 620)
+        self._state_save_pending = False
+        self._state_save_timer = QTimer(self.window)
+        self._state_save_timer.setSingleShot(True)
+        self._state_save_timer.timeout.connect(self._save_state_now)
 
         self.tabs = BrowserTabs()
         self.tabs.setDocumentMode(True)
@@ -560,53 +507,86 @@ class BrowserApp:
         self._bind_actions()
         self._apply_style()
         self._new_tab(self.settings.home_url)
-        self._save_state()
+        self._save_state(immediate=True)
+        self._spawn_task(self._restore_authenticated_profile())
 
     def _show_account_dialog(self) -> None:
-        self._save_state()
-        dialog = AuthDialog(self.storage)
-        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.user is None:
-            return
-        self._switch_profile(dialog.user, copy_current=dialog.created_user)
+        self._save_state(immediate=True)
+        self._open_account_page("login")
 
     def _use_local_profile(self) -> None:
         if self.current_user.get("is_local"):
             return
-        self._save_state()
-        self.storage.forget_profile_key(self.current_user["id"])
-        self._switch_profile(self.storage.get_or_create_local_user(), copy_current=False)
+        self._save_state(immediate=True)
+        if isinstance(self.profile_store, RemoteEncryptedProfileStore):
+            self.profile_store.clear_local_key()
+        self._spawn_task(self._logout_to_guest())
 
-    def _switch_profile(self, user: dict[str, Any], copy_current: bool = False) -> None:
-        if copy_current:
-            old_settings = self._settings_data()
-            old_bookmarks = list(self.bookmarks)
-            old_shortcuts = list(self.shortcuts)
-            old_history = list(self.history)
-            self.current_user = user
-            user_id = self.current_user["id"]
-            if not self.storage.load_settings(user_id):
-                self.storage.save_settings(user_id, old_settings)
-            if not self.storage.load_bookmarks(user_id):
-                self.storage.save_bookmarks(user_id, old_bookmarks)
-            if not self.storage.load_shortcuts(user_id):
-                self.storage.save_shortcuts(user_id, old_shortcuts)
-            if not self.storage.load_history(user_id):
-                self.storage.save_history(user_id, old_history)
-        else:
-            self.current_user = user
-
+    def _switch_profile(self, store: EphemeralGuestProfileStore | RemoteEncryptedProfileStore, profile_data: dict[str, Any] | None = None) -> None:
+        self.profile_store = store
+        self.current_user = dict(store.current_user if hasattr(store, "current_user") else store.user)
+        self._profile_cache = profile_data or store.load_profile_data()
         self.settings = self._load_settings()
         self.bookmarks = self._load_list("bookmarks", DEFAULT_BOOKMARKS)
         self.shortcuts = self._load_shortcuts(DEFAULT_BOOKMARKS)
         self.history = self._load_history()
         self.dns_client = self._make_dns_client()
         self.vpn_client = self._make_vpn_client()
+        self._session = SessionManager(
+            base_url=ACCOUNT_BASE_URL,
+            dns_client=self.dns_client,
+            http_client=self.http_client,
+            cookie_jar=self.cookie_jar,
+            http_default_port=self.settings.http_default_port,
+            https_default_port=self.settings.https_default_port,
+            on_cookies_changed=self._on_session_cookies_changed,
+        )
         self._apply_style()
         self._refresh_side_lists()
         self._update_account_actions()
         self._sync_toolbar()
-        mode = "encrypted account" if self.current_user.get("encrypted") else "local profile"
+        mode = "encrypted account" if self.current_user.get("encrypted") else "guest profile"
         self._set_status(f"Using {mode}: {self.current_user.get('display_name')}.")
+
+    def _open_account_page(self, mode: str) -> None:
+        current = self._current_tab()
+        next_url = "/"
+        if current and current.current_url.startswith(("http://", "https://")):
+            next_url = current.current_url
+        base = ACCOUNT_BASE_URL.rstrip("/")
+        target = f"{base}/{mode}?next={quote_plus(next_url)}"
+        self._navigate(target)
+
+    async def _logout_to_guest(self) -> None:
+        try:
+            await self._session.logout()
+        except Exception:
+            pass
+        self._switch_profile(EphemeralGuestProfileStore(DEFAULT_BOOKMARKS))
+        self._save_state(immediate=True)
+
+    async def _restore_authenticated_profile(self) -> None:
+        try:
+            user = await self._session.me()
+        except Exception:
+            return
+        if not user:
+            return
+        store = RemoteEncryptedProfileStore(self._session, STATE_DIR, user)
+        try:
+            restored = await store.restore_from_saved_key()
+        except Exception:
+            restored = False
+        if not restored:
+            store.clear_local_key()
+            try:
+                await self._session.logout()
+            except Exception:
+                pass
+            self._set_status("Saved session expired or profile is locked. Sign in again to unlock your browser profile.")
+            return
+        self._switch_profile(store, store.load_profile_data())
+        self._save_state(immediate=True)
 
     def _setup_qt_profiles(self) -> None:
         if QWebEngineProfile is None:
@@ -629,9 +609,46 @@ class BrowserApp:
                 self._qt_cookie_store.cookieAdded.connect(self._on_qt_cookie_added)
                 self._qt_cookie_store.cookieRemoved.connect(self._on_qt_cookie_removed)
             self._seed_qt_cookies()
+            self._configure_qt_network_proxy(False)
         except Exception:
             self._normal_profile = None
             self._qt_cookie_store = None
+            self._configure_qt_network_proxy(False)
+
+    async def start_background_services(self) -> None:
+        if self._webengine_proxy is not None:
+            await self._webengine_proxy.start()
+            self._configure_qt_network_proxy(True)
+        else:
+            self._configure_qt_network_proxy(False)
+
+    async def shutdown_async(self) -> None:
+        try:
+            await self.profile_store.sync_state(
+                self._settings_data(),
+                self.bookmarks,
+                self.shortcuts,
+                self.history,
+            )
+        except Exception:
+            pass
+        self._configure_qt_network_proxy(False)
+        if self._webengine_proxy is not None:
+            await self._webengine_proxy.stop()
+
+    def _configure_qt_network_proxy(self, enabled: bool) -> None:
+        if QNetworkProxy is None:
+            return
+        proxy_type_container = getattr(QNetworkProxy, "ProxyType", QNetworkProxy)
+        no_proxy = getattr(proxy_type_container, "NoProxy", getattr(QNetworkProxy, "NoProxy", None))
+        http_proxy = getattr(proxy_type_container, "HttpProxy", getattr(QNetworkProxy, "HttpProxy", None))
+        if enabled and self._webengine_proxy is not None and http_proxy is not None:
+            proxy = QNetworkProxy(http_proxy, self._webengine_proxy.bind_host, self._webengine_proxy.bind_port)
+        elif no_proxy is not None:
+            proxy = QNetworkProxy(no_proxy)
+        else:
+            return
+        QNetworkProxy.setApplicationProxy(proxy)
 
     def _seed_qt_cookies(self) -> None:
         if self._qt_cookie_store is None:
@@ -653,7 +670,7 @@ class BrowserApp:
             from PySide6.QtCore import QDateTime
         except ImportError:
             return
-        domain = cookie.domain if not cookie.host_only else f".{cookie.domain}"
+        domain = cookie.domain if cookie.host_only else f".{cookie.domain}"
         qt_cookie = QNetworkCookie()
         qt_cookie.setName(cookie.name.encode("utf-8"))
         qt_cookie.setValue(cookie.value.encode("utf-8"))
@@ -718,6 +735,13 @@ class BrowserApp:
         except Exception:
             pass
 
+    def _on_session_cookies_changed(self, cookies: list[Any]) -> None:
+        if not cookies:
+            return
+        for cookie in cookies:
+            self._set_qt_cookie(cookie)
+        self.cookie_jar.save()
+
     def _get_cookie_jar(self, tab: BrowserTab) -> CookieJar:
         if tab.incognito:
             if tab.incognito_jar_id not in self._incognito_jars:
@@ -760,8 +784,9 @@ class BrowserApp:
         self.settings_action = QAction("Settings", self.window)
         self.account_action = QAction("", self.window)
         self.account_action.setEnabled(False)
-        self.sign_in_action = QAction("Sign In / Sign Up", self.window)
-        self.sign_out_action = QAction("Use Local Profile", self.window)
+        self.sign_in_action = QAction("Sign In", self.window)
+        self.sign_up_action = QAction("Create Account", self.window)
+        self.sign_out_action = QAction("Sign Out", self.window)
         self.vpn_check_action = QAction("Check VPN IP", self.window)
         self.ai_assistant_action = QAction(self._theme_icon("dialog-question"), "AI Assistant", self.window)
         self.ai_assistant_action.setCheckable(True)
@@ -811,6 +836,7 @@ class BrowserApp:
         self.menu = QMenu(self.menu_button)
         self.menu.addAction(self.account_action)
         self.menu.addAction(self.sign_in_action)
+        self.menu.addAction(self.sign_up_action)
         self.menu.addAction(self.sign_out_action)
         self.menu.addSeparator()
         self.menu.addAction(self.new_tab_action)
@@ -1025,6 +1051,7 @@ class BrowserApp:
         self.close_devtools_btn.clicked.connect(lambda: self.devtools_frame.hide())
         self.settings_action.triggered.connect(self._open_settings_page)
         self.sign_in_action.triggered.connect(self._show_account_dialog)
+        self.sign_up_action.triggered.connect(lambda: self._open_account_page("register"))
         self.sign_out_action.triggered.connect(self._use_local_profile)
         self.vpn_check_action.triggered.connect(lambda: self._navigate("internal:vpn-check"))
         self.ai_assistant_action.triggered.connect(lambda checked: self._toggle_assistant(checked))
@@ -1379,6 +1406,14 @@ class BrowserApp:
         if QWebEnginePage:
             tab.page = BrowserPage(self, tab)
             view.setPage(tab.page)
+            if QWebChannel is not None:
+                tab.auth_bridge = WaterCatAuthBridge(self, tab)
+                tab.web_channel = QWebChannel(view.page())
+                tab.web_channel.registerObject("watercatAuth", tab.auth_bridge)
+                try:
+                    view.page().setWebChannel(tab.web_channel)
+                except Exception:
+                    tab.web_channel = None
         view.loadStarted.connect(lambda t=tab: self._on_view_load_started(t))
         view.loadProgress.connect(lambda progress, t=tab: self._on_view_load_progress(t, progress))
         view.loadFinished.connect(lambda ok, t=tab: self._on_view_load_finished(t, ok))
@@ -1419,6 +1454,71 @@ class BrowserApp:
     def _on_go(self):
         self._navigate(self._resolve_address(self.url_input.text().strip()))
 
+    def _spawn_task(self, coro):
+        loop = asyncio.get_event_loop()
+        task = loop.create_task(coro)
+        task.add_done_callback(self._on_async_task_done)
+        return task
+
+    def _on_async_task_done(self, task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            traceback.print_exc()
+            self._set_status(f"Async error: {exc}")
+
+    async def _complete_account_auth(self, tab: BrowserTab, raw_payload: str) -> None:
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            self._emit_account_auth_result(tab, {"success": False, "error": "Invalid authentication payload."})
+            return
+
+        mode = str(payload.get("mode", "login")).strip().lower()
+        username = str(payload.get("username", "")).strip()
+        password = str(payload.get("password", "")).strip()
+        display_name = str(payload.get("display_name", "")).strip()
+        next_url = str(payload.get("next", "/")).strip() or "/"
+        if mode not in {"login", "register"}:
+            self._emit_account_auth_result(tab, {"mode": mode, "success": False, "error": "Unknown authentication mode."})
+            return
+        if not username or not password:
+            self._emit_account_auth_result(tab, {"mode": mode, "success": False, "error": "Username and password are required."})
+            return
+        if mode == "register" and password != str(payload.get("confirm_password", "")).strip():
+            self._emit_account_auth_result(tab, {"mode": mode, "success": False, "error": "Password confirmation does not match."})
+            return
+
+        try:
+            if mode == "register":
+                user = await self._session.register(username, password, display_name)
+            else:
+                user = await self._session.login(username, password)
+            store = RemoteEncryptedProfileStore(self._session, STATE_DIR, user)
+            profile_data = await store.bootstrap_with_password(password)
+            self._switch_profile(store, profile_data)
+            self._save_state(immediate=True)
+        except (ProfileStoreError, SessionError) as exc:
+            self._emit_account_auth_result(tab, {"mode": mode, "success": False, "error": str(exc)})
+            return
+        except Exception as exc:
+            self._emit_account_auth_result(tab, {"mode": mode, "success": False, "error": f"Authentication failed: {exc}"})
+            return
+
+        target = next_url if next_url.startswith(("http://", "https://")) else self.settings.home_url
+        QTimer.singleShot(0, lambda target=target, current_tab=tab: self._navigate(target, tab=current_tab, add_history=False, record_navigation=False))
+        self._emit_account_auth_result(tab, {"mode": mode, "success": True})
+
+    def _emit_account_auth_result(self, tab: BrowserTab, payload: dict[str, Any]) -> None:
+        if getattr(tab, "auth_bridge", None) is None or getattr(tab.auth_bridge, "authResult", None) is None:
+            return
+        try:
+            tab.auth_bridge.authResult.emit(json.dumps(payload))
+        except Exception:
+            pass
+
     def _resolve_address(self, value: str) -> str:
         if not value:
             return self.settings.home_url
@@ -1435,6 +1535,15 @@ class BrowserApp:
         return self.settings.search_url.replace("{query}", quote_plus(value))
 
     def _navigate(
+        self,
+        url: str,
+        tab: Optional[BrowserTab] = None,
+        add_history: bool = True,
+        record_navigation: bool = True,
+    ):
+        self._spawn_task(self._navigate_async(url, tab=tab, add_history=add_history, record_navigation=record_navigation))
+
+    async def _navigate_async(
         self,
         url: str,
         tab: Optional[BrowserTab] = None,
@@ -1462,7 +1571,7 @@ class BrowserApp:
                 return
 
             if url.startswith("watercat-form:"):
-                self._handle_form_submission(url, tab)
+                await self._handle_form_submission(url, tab)
                 return
 
             if url.startswith("internal:"):
@@ -1479,6 +1588,15 @@ class BrowserApp:
 
             normalized_url = parsed.raw.lower()
             host = (parsed.host or "").lower()
+            if self._is_account_url(parsed.raw):
+                self._navigate_with_webengine(
+                    parsed.raw,
+                    parsed.host,
+                    tab,
+                    add_history=add_history,
+                    record_navigation=record_navigation,
+                )
+                return
             if self._phishing_enabled and self._phishing_reputation is not None:
                 if host not in self._phishing_session_host_allow:
                     url_assessment = assess_url(parsed.raw, self._phishing_reputation)
@@ -1512,7 +1630,7 @@ class BrowserApp:
                 dns_ttl_remaining = None
             else:
                 try:
-                    dns_result = self.dns_client.resolve(parsed.host)
+                    dns_result = await self.dns_client.resolve(parsed.host)
                 except DNSError as exc:
                     event.status = "404 Not Found"
                     event.error = str(exc)
@@ -1537,7 +1655,7 @@ class BrowserApp:
 
             self._set_status("Loading...")
             try:
-                response, cache_state, req_headers, route_meta = self._custom_fetch(
+                response, cache_state, req_headers, route_meta = await self._custom_fetch(
                     scheme=scheme,
                     host=parsed.host,
                     port=http_port,
@@ -1567,18 +1685,15 @@ class BrowserApp:
             if redirect_url:
                 self._record_event(event)
                 self._set_status(f"Redirecting to {redirect_url}")
-                QTimer.singleShot(
-                    0,
-                    lambda target=redirect_url: self._navigate(
-                        target,
-                        tab=tab,
-                        add_history=add_history,
-                        record_navigation=record_navigation,
-                    ),
+                await self._navigate_async(
+                    redirect_url,
+                    tab=tab,
+                    add_history=add_history,
+                    record_navigation=record_navigation,
                 )
                 return
 
-            self._render_response(tab, response, dns_ip, http_port, request_path, cache_state)
+            await self._render_response(tab, response, dns_ip, http_port, request_path, cache_state)
             self._record_event(event)
 
             if record_navigation and tab.current_url and tab.current_url != parsed.raw:
@@ -1590,21 +1705,12 @@ class BrowserApp:
             if add_history and not tab.incognito:
                 self._add_history(parsed.raw)
             self._save_state()
-            try:
-                if self._session.is_authenticated():
-                    try:
-                        title = tab.title or ""
-                        self._session.post_history(parsed.raw, title)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
             self._set_status(f"{event.status} | {event.duration_ms}ms")
         finally:
             self._refresh_all()
             self._sync_toolbar()
 
-    def _handle_form_submission(self, url: str, tab):
+    async def _handle_form_submission(self, url: str, tab):
         try:
             payload = base64.b64decode(url[16:]).decode("utf-8")
             data = json.loads(payload)
@@ -1617,10 +1723,10 @@ class BrowserApp:
                 self._navigate(form_url, tab)
             elif method == "POST":
                 parsed = parse_url(form_url)
-                ip = self.dns_client.resolve(parsed.host).ip
+                ip = (await self.dns_client.resolve(parsed.host)).ip
                 port = self._effective_port(form_url, parsed.protocol, parsed.host, parsed.port)
                 path = parsed.path
-                response = self.http_client.post(
+                response = await self.http_client.post(
                     ip=ip, port=port, path=path, host=parsed.host,
                     body=body, content_type=content_type,
                     use_tls=(parsed.protocol == "https")
@@ -1628,12 +1734,11 @@ class BrowserApp:
                 tab.current_url = form_url
                 tab.view.setHtml(response.body, QUrl(form_url))
         except Exception as e:
-            import traceback
             traceback.print_exc()
             self._set_status(f"Form error: {e}")
 
-    def _render_response(self, tab: BrowserTab, response: HTTPResponse, ip: str, port: int, path: str, cache_state: str = "miss"):
-        content_type = response.headers.get("Content-Type", "").lower()
+    async def _render_response(self, tab: BrowserTab, response: HTTPResponse, ip: str, port: int, path: str, cache_state: str = "miss"):
+        content_type = response.header("Content-Type").lower()
         protocol = "https" if tab.last_event and tab.last_event.url.startswith("https://") else "http"
         base_url = QUrl(f"{protocol}://{ip}:{port}{path}")
 
@@ -1641,7 +1746,7 @@ class BrowserApp:
             tab.last_event.cache_state = cache_state
 
         if response.is_ok and "text/html" in content_type:
-            html_body = self._load_same_origin_assets(response.body, ip, port, tab)
+            html_body = await self._load_same_origin_assets(response.body, ip, port, tab)
             tab.view.setHtml(html_body, base_url)
             self._run_post_load_phishing(tab)
         elif response.is_ok and self._is_displayable_response(content_type):
@@ -1758,16 +1863,16 @@ class BrowserApp:
         if add_history and not tab.incognito:
             self._add_history(url)
             self._save_state()
-        self._set_status("Loading page in Qt WebEngine...")
+        self._set_status(self._webengine_status_text(url))
         tab.view.load(QUrl(url))
 
     def _on_view_load_started(self, tab: BrowserTab):
         if tab.current_url.startswith(("http://", "https://")) and not self._should_use_custom_loader_from_url(tab.current_url):
-            self._set_status("Loading page in Qt WebEngine...")
+            self._set_status(self._webengine_status_text(tab.current_url))
 
     def _on_view_load_progress(self, tab: BrowserTab, progress: int):
         if tab.current_url.startswith(("http://", "https://")) and not self._should_use_custom_loader_from_url(tab.current_url):
-            self._set_status(f"Loading page in Qt WebEngine... {progress}%")
+            self._set_status(self._webengine_status_text(tab.current_url, progress))
 
     def _on_view_load_finished(self, tab: BrowserTab, ok: bool):
         if not tab.current_url.startswith(("http://", "https://")):
@@ -1805,7 +1910,7 @@ class BrowserApp:
             self._favicon_cache[parsed.hostname] = icon
         self._update_tab_label(tab)
 
-    def _load_same_origin_assets(self, html_body: str, ip: str, port: int, tab: BrowserTab) -> str:
+    async def _load_same_origin_assets(self, html_body: str, ip: str, port: int, tab: BrowserTab) -> str:
         """Inline same-origin CSS as <style> tags and convert same-origin images to data URIs."""
         host = tab.last_event.host if tab.last_event else ""
         use_tls = tab.last_event.url.startswith("https://") if tab.last_event else False
@@ -1848,7 +1953,7 @@ class BrowserApp:
                     html_body = html_body[:match.start()] + _skip_external(href, full_tag) + html_body[match.end():]
                     continue
                 try:
-                    resp, _, _, _ = self._custom_fetch(scheme=scheme, host=host, port=port, path=request_path, ip=ip, tab=tab)
+                    resp, _, _, _ = await self._custom_fetch(scheme=scheme, host=host, port=port, path=request_path, ip=ip, tab=tab)
                     if resp.is_ok:
                         replacement = f"<style>{resp.body}</style>"
                         html_body = html_body[:match.start()] + replacement + html_body[match.end():]
@@ -1865,9 +1970,9 @@ class BrowserApp:
                     html_body = html_body[:match.start()] + _skip_external(src, full_tag) + html_body[match.end():]
                 continue
             try:
-                resp, _, _, _ = self._custom_fetch(scheme=scheme, host=host, port=port, path=request_path, ip=ip, tab=tab)
+                resp, _, _, _ = await self._custom_fetch(scheme=scheme, host=host, port=port, path=request_path, ip=ip, tab=tab)
                 if resp.is_ok:
-                    mime = resp.headers.get("Content-Type", "application/octet-stream")
+                    mime = resp.header("Content-Type", "application/octet-stream")
                     encoded = base64.b64encode(resp.body_bytes).decode("ascii")
                     data_uri = f"data:{mime};base64,{encoded}"
                     new_tag = full_tag.replace(f'src="{src}"', f'src="{data_uri}"', 1).replace(f"src='{src}'", f'src="{data_uri}"', 1)
@@ -2065,8 +2170,11 @@ class BrowserApp:
         tab.view.setHtml(self._page_html("Search", body))
 
     def _render_vpn_check_page(self, tab: BrowserTab):
-        direct_ip, direct_error = self._fetch_direct_ip()
-        vpn_ip, vpn_error, vpn_source = self._fetch_vpn_ip()
+        self._spawn_task(self._render_vpn_check_page_async(tab))
+
+    async def _render_vpn_check_page_async(self, tab: BrowserTab):
+        direct_ip, direct_error = await asyncio.to_thread(self._fetch_direct_ip)
+        vpn_ip, vpn_error, vpn_source = await self._fetch_vpn_ip()
         direct_text = direct_ip or f"Error: {direct_error}"
         vpn_text = vpn_ip or f"Error: {vpn_error}"
         verdict = "VPN route is working." if vpn_ip and vpn_ip != direct_ip else "VPN route is not changing the visible IP."
@@ -2120,7 +2228,7 @@ class BrowserApp:
         except Exception as exc:
             return "", str(exc)
 
-    def _fetch_vpn_ip(self) -> tuple[str, str, str]:
+    async def _fetch_vpn_ip(self) -> tuple[str, str, str]:
         checks = [
             ("api.ipify.org", "/", "plain"),
             ("icanhazip.com", "/", "plain"),
@@ -2129,8 +2237,8 @@ class BrowserApp:
         last_error = ""
         for host, path, response_type in checks:
             try:
-                ip = socket.gethostbyname(host)
-                response = self.vpn_client.get(ip=ip, port=80, path=path, host=host)
+                ip = await asyncio.to_thread(socket.gethostbyname, host)
+                response = await self.vpn_client.get(ip=ip, port=80, path=path, host=host)
                 body = response.body.strip()
                 if response_type == "json":
                     parsed = json.loads(body)
@@ -2184,7 +2292,7 @@ class BrowserApp:
 
     def _render_download_page(self, tab: BrowserTab, response: HTTPResponse):
         size = len(response.body_bytes)
-        content_type = html.escape(response.headers.get("Content-Type", "application/octet-stream"))
+        content_type = html.escape(response.header("Content-Type", "application/octet-stream"))
         size_str = f"{size:,}" if size >= 1000 else str(size)
         body = (
             "<main class='page-shell'>"
@@ -2203,7 +2311,7 @@ class BrowserApp:
         tab.view.setHtml(self._page_html("Download ready", body))
 
     def _render_text_response(self, tab: BrowserTab, response: HTTPResponse):
-        content_type = response.headers.get("Content-Type", "text/plain")
+        content_type = response.header("Content-Type", "text/plain")
         size = len(response.body_bytes)
         size_str = f"{size:,}" if size >= 1000 else str(size)
         body_text = response.body.strip()
@@ -2524,7 +2632,7 @@ class BrowserApp:
             for cookie in new_cookies:
                 self._set_qt_cookie(cookie)
 
-    def _custom_fetch(
+    async def _custom_fetch(
         self,
         scheme: str,
         host: str,
@@ -2545,7 +2653,7 @@ class BrowserApp:
         cached_entry = None
 
         if self.settings.enable_http_cache:
-            cached_entry = self.http_cache.lookup(scheme, host, port, path)
+            cached_entry = await self.http_cache.lookup_async(scheme, host, port, path)
             if cached_entry:
                 if cached_entry.is_fresh:
                     response = HTTPResponse(
@@ -2559,7 +2667,7 @@ class BrowserApp:
                         set_cookie_headers=[],
                     )
                     # Inject form interception into HTML pages
-                    if response.status_code == 200 and response.headers.get("Content-Type", "").startswith("text/html"):
+                    if response.status_code == 200 and response.header("Content-Type").startswith("text/html"):
                         response.body_bytes = inject_form_intercept(response.body_bytes, f"{scheme}://{host}{path}")
                         response.body = response.body_bytes.decode("utf-8", errors="replace")
                     return response, "hit", request_headers, route_meta
@@ -2570,7 +2678,7 @@ class BrowserApp:
                         request_headers["If-Modified-Since"] = cached_entry.last_modified
 
         client = self.vpn_client if use_vpn else self.http_client
-        response = client.get(
+        response = await client.get(
             ip=ip,
             port=port,
             path=path,
@@ -2581,7 +2689,7 @@ class BrowserApp:
 
         self._store_cookies(host, scheme, path, response, tab)
 
-        cc = response.headers.get("Cache-Control", "").lower()
+        cc = response.header("Cache-Control").lower()
         if self.settings.enable_http_cache:
             cookie_in_use = bool(request_headers.get("Cookie"))
             has_set_cookie = bool(response.set_cookie_headers)
@@ -2601,14 +2709,14 @@ class BrowserApp:
                         set_cookie_headers=response.set_cookie_headers,
                     )
                     cache_state = "revalidated"
-                    self.http_cache.store(
+                    await self.http_cache.store_async(
                         scheme, host, port, path,
                         cached_entry.status_code, cached_entry.status_text,
                         merged_headers, cached_entry.body_bytes,
                     )
                 elif response.status_code == 200:
                     cache_state = "miss"
-                    self.http_cache.store(
+                    await self.http_cache.store_async(
                         scheme, host, port, path,
                         response.status_code, response.status_text,
                         dict(response.headers), response.body_bytes,
@@ -2621,7 +2729,7 @@ class BrowserApp:
             cache_state = "miss"
 
         # Inject form interception into HTML pages
-        if response.status_code == 200 and response.headers.get("Content-Type", "").startswith("text/html"):
+        if response.status_code == 200 and response.header("Content-Type").startswith("text/html"):
             response.body_bytes = inject_form_intercept(response.body_bytes, f"{scheme}://{host}{path}")
             response.body = response.body_bytes.decode("utf-8", errors="replace")
 
@@ -2646,7 +2754,7 @@ class BrowserApp:
 
     def _download_filename(self, tab: BrowserTab) -> str:
         if tab.last_response:
-            disposition = tab.last_response.headers.get("Content-Disposition", "")
+            disposition = tab.last_response.header("Content-Disposition")
             match = re.search(r'filename="?([^";]+)"?', disposition)
             if match:
                 return match.group(1)
@@ -3589,7 +3697,7 @@ class BrowserApp:
         if tab.incognito:
             label = f"Incognito - {label}"
         display_name = self.current_user.get("display_name") or self.current_user.get("username", "")
-        mode = "Local" if self.current_user.get("is_local") else "Encrypted"
+        mode = "Guest" if self.current_user.get("is_local") else "Synced"
         self.window.setWindowTitle(f"{label} - WaterCat Browser ({mode}: {display_name})")
 
     def _update_account_actions(self) -> None:
@@ -3597,12 +3705,14 @@ class BrowserApp:
             return
         display_name = self.current_user.get("display_name") or self.current_user.get("username", "")
         if self.current_user.get("is_local"):
-            self.account_action.setText("Profile: Local (unencrypted SQLite)")
+            self.account_action.setText("Profile: Guest (ephemeral)")
             self.sign_in_action.setEnabled(True)
+            self.sign_up_action.setEnabled(True)
             self.sign_out_action.setEnabled(False)
             return
-        self.account_action.setText(f"Profile: {display_name} (encrypted)")
+        self.account_action.setText(f"Profile: {display_name} (synced)")
         self.sign_in_action.setEnabled(True)
+        self.sign_up_action.setEnabled(True)
         self.sign_out_action.setEnabled(True)
 
     def _update_tab_label(self, tab: BrowserTab):
@@ -3706,14 +3816,44 @@ class BrowserApp:
     def _is_ipv4(value: str) -> bool:
         return is_ipv4_address(value)
 
+    def _is_account_url(self, url: str) -> bool:
+        parsed = urlparse(url if "://" in url else f"http://{url}")
+        account = urlparse(ACCOUNT_BASE_URL if "://" in ACCOUNT_BASE_URL else f"http://{ACCOUNT_BASE_URL}")
+        host = (parsed.hostname or "").lower()
+        account_host = (account.hostname or "").lower()
+        if not host or host != account_host:
+            return False
+        path = parsed.path or "/"
+        return path in {"/login", "/register"} or path.startswith("/auth/")
+
+    def _should_use_webengine_proxy(self, host: str) -> bool:
+        host = (host or "").strip().lower()
+        return bool(host) and FORCE_CUSTOM_DNS_ALL_HOSTS and not should_use_custom_dns(host, force_all_hosts=False)
+
     def _should_use_custom_loader(self, host: str, scheme: str = "") -> bool:
-        if should_use_custom_dns(host, force_all_hosts=FORCE_CUSTOM_DNS_ALL_HOSTS):
+        if should_use_custom_dns(host, force_all_hosts=False):
             return True
+        if self._should_use_webengine_proxy(host):
+            return False
         return scheme == "http" and self._should_use_vpn(host)
 
     def _should_use_custom_loader_from_url(self, url: str) -> bool:
+        if self._is_account_url(url):
+            return False
         parsed = urlparse(url)
         return self._should_use_custom_loader(parsed.hostname or "", parsed.scheme)
+
+    def _webengine_status_text(self, url: str, progress: Optional[int] = None) -> str:
+        if self._is_account_url(url):
+            prefix = "Loading account page in Qt WebEngine"
+            if progress is None:
+                return f"{prefix}..."
+            return f"{prefix}... {progress}%"
+        host = (urlparse(url).hostname or "").lower()
+        prefix = "Loading page in Qt WebEngine via local proxy" if self._should_use_webengine_proxy(host) else "Loading page in Qt WebEngine"
+        if progress is None:
+            return f"{prefix}..."
+        return f"{prefix}... {progress}%"
 
     def _should_use_vpn(self, host: str) -> bool:
         if not self.settings.enable_vpn:
@@ -3895,9 +4035,7 @@ class BrowserApp:
         self.status_bar.showMessage(msg)
 
     def _load_settings(self) -> BrowserSettings:
-        raw = self.storage.load_settings(self.current_user["id"])
-        if not raw:
-            raw = self._legacy_state.get("settings", {}) if hasattr(self, "_legacy_state") else {}
+        raw = self._profile_cache.get("settings", {}) if hasattr(self, "_profile_cache") else {}
         if not isinstance(raw, dict):
             raw = {}
         return BrowserSettings(
@@ -3940,21 +4078,15 @@ class BrowserApp:
 
     def _load_list(self, key: str, default: list[str]) -> list[str]:
         if key == "bookmarks":
-            values = self.storage.load_bookmarks(self.current_user["id"])
-            if not values:
-                values = default
+            values = self._profile_cache.get("bookmarks", default)
         else:
-            state = self._legacy_state if hasattr(self, "_legacy_state") else self._read_state()
-            values = state.get(key, default)
+            values = self._profile_cache.get(key, default)
         if not isinstance(values, list):
             return list(default)
         return [str(value) for value in values if str(value).strip()]
 
     def _load_shortcuts(self, default: list[str]) -> list[Any]:
-        values = self.storage.load_shortcuts(self.current_user["id"])
-        if not values:
-            state = self._legacy_state if hasattr(self, "_legacy_state") else self._read_state()
-            values = state.get("shortcuts", default)
+        values = self._profile_cache.get("shortcuts", default)
         if not isinstance(values, list):
             values = default
         result = []
@@ -3971,10 +4103,7 @@ class BrowserApp:
         return result
 
     def _load_history(self) -> list[dict[str, str]]:
-        values = self.storage.load_history(self.current_user["id"])
-        if not values:
-            state = self._legacy_state if hasattr(self, "_legacy_state") else self._read_state()
-            values = state.get("history", [])
+        values = self._profile_cache.get("history", [])
         if not isinstance(values, list):
             return []
         result = []
@@ -4020,40 +4149,67 @@ class BrowserApp:
             "search_engine": self.settings.search_engine,
         }
 
-    def _save_state(self):
-        user_id = self.current_user["id"]
-        try:
-            self.storage.save_settings(user_id, self._settings_data())
-            self.storage.save_bookmarks(user_id, self.bookmarks)
-            self.storage.save_shortcuts(user_id, self.shortcuts)
-            self.storage.save_history(user_id, self.history)
-            self.storage.set_user_meta(user_id, "last_saved_at", BrowserStorage.now())
-        except Exception as exc:
-            self._set_status(f"Could not save SQLite state: {exc}")
+    def _save_state(self, immediate: bool = False):
+        if immediate:
+            self._save_state_now()
+            return
+        self._state_save_pending = True
+        self._state_save_timer.start(200)
+
+    def _save_state_now(self):
+        self._state_save_pending = False
+        profile_payload = {
+            "settings": self._settings_data(),
+            "bookmarks": list(self.bookmarks),
+            "shortcuts": list(self.shortcuts),
+            "history": list(self.history),
+        }
+        self._profile_cache = profile_payload
+        if isinstance(self.profile_store, RemoteEncryptedProfileStore):
+            self._spawn_task(self._sync_remote_profile_state())
+        else:
+            self._spawn_task(
+                self.profile_store.sync_state(
+                    profile_payload["settings"],
+                    profile_payload["bookmarks"],
+                    profile_payload["shortcuts"],
+                    profile_payload["history"],
+                )
+            )
 
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if self.current_user.get("encrypted"):
-            data = {
-                "current_user": self.current_user["username"],
-                "database": str(BROWSER_DB_PATH),
-                "encrypted_profile": True,
-            }
-        else:
-            data = {
-                "settings": self._settings_data(),
-                "bookmarks": self.bookmarks,
-                "shortcuts": self.shortcuts,
-                "history": self.history,
-                "current_user": self.current_user["username"],
-                "database": str(BROWSER_DB_PATH),
-                "encrypted_profile": False,
-            }
+        data = {
+            "current_user": self.current_user["username"],
+            "encrypted_profile": bool(self.current_user.get("encrypted")),
+        }
         data.update(self.cookie_jar._state_data())
         try:
             with open(STATE_PATH, "w", encoding="utf-8") as file_obj:
                 json.dump(data, file_obj, indent=2)
         except OSError as exc:
             self._set_status(f"Could not save state: {exc}")
+
+    async def _sync_remote_profile_state(self) -> None:
+        if not isinstance(self.profile_store, RemoteEncryptedProfileStore):
+            return
+        try:
+            merged = await self.profile_store.sync_state(
+                self._settings_data(),
+                self.bookmarks,
+                self.shortcuts,
+                self.history,
+            )
+        except Exception as exc:
+            self._set_status(f"Could not sync encrypted profile: {exc}")
+            return
+        self._profile_cache = merged
+        self.settings = self._load_settings()
+        self.bookmarks = self._load_list("bookmarks", DEFAULT_BOOKMARKS)
+        self.shortcuts = self._load_shortcuts(DEFAULT_BOOKMARKS)
+        self.history = self._load_history()
+        self.dns_client = self._make_dns_client()
+        self.vpn_client = self._make_vpn_client()
+        self._refresh_side_lists()
 
     @staticmethod
     def _setting_raw(raw: dict[str, Any], state_key: str, env_key: str, config_value: Any) -> Any:
@@ -4105,11 +4261,20 @@ class BrowserApp:
 
 
 def main():
+    if QEventLoop is None:
+        raise SystemExit("Missing qasync. Install with: python -m pip install qasync")
     app = QApplication(sys.argv)
+    loop = QEventLoop(app)
+    asyncio.set_event_loop(loop)
     browser = BrowserApp()
-    app.aboutToQuit.connect(browser.storage.close)
+    app.aboutToQuit.connect(browser._save_state_now)
     browser.window.show()
-    sys.exit(app.exec())
+    with loop:
+        try:
+            loop.run_until_complete(browser.start_background_services())
+            loop.run_forever()
+        finally:
+            loop.run_until_complete(browser.shutdown_async())
 
 
 if __name__ == "__main__":

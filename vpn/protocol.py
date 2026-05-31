@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 PROTOCOL_VERSION = "v1"
 CONNECT_OPERATION = "connect"
+STREAM_CONNECT_OPERATION = "stream_connect"
 
 STATUS_OK = "OK"
 STATUS_BAD_REQUEST = "BAD_REQUEST"
@@ -35,6 +36,16 @@ class TunnelRequest:
     server_name: str = ""
     version: str = PROTOCOL_VERSION
     op: str = CONNECT_OPERATION
+
+
+@dataclass(frozen=True)
+class StreamTunnelRequest:
+    request_id: str
+    target_host: str
+    target_port: int
+    token: str = ""
+    version: str = PROTOCOL_VERSION
+    op: str = STREAM_CONNECT_OPERATION
 
 
 def encode_frame(payload: dict[str, Any]) -> bytes:
@@ -79,6 +90,22 @@ def build_connect_request(
     }
 
 
+def build_stream_connect_request(
+    request_id: str,
+    token: str,
+    target_host: str,
+    target_port: int,
+) -> dict[str, Any]:
+    return {
+        "version": PROTOCOL_VERSION,
+        "id": request_id,
+        "op": STREAM_CONNECT_OPERATION,
+        "token": token,
+        "target_host": target_host,
+        "target_port": int(target_port),
+    }
+
+
 def parse_connect_request(frame: dict[str, Any]) -> TunnelRequest:
     request_id = _string_or_none(frame.get("id"))
     if frame.get("version") != PROTOCOL_VERSION:
@@ -116,6 +143,31 @@ def parse_connect_request(frame: dict[str, Any]) -> TunnelRequest:
     )
 
 
+def parse_stream_connect_request(frame: dict[str, Any]) -> StreamTunnelRequest:
+    request_id = _string_or_none(frame.get("id"))
+    if frame.get("version") != PROTOCOL_VERSION:
+        raise VPNProtocolError(STATUS_BAD_REQUEST, "Unsupported protocol version", request_id)
+    if request_id is None:
+        raise VPNProtocolError(STATUS_BAD_REQUEST, "Missing or invalid id")
+    if frame.get("op") != STREAM_CONNECT_OPERATION:
+        raise VPNProtocolError(STATUS_BAD_REQUEST, "Unsupported or missing operation", request_id)
+    target_host = _string_or_none(frame.get("target_host"))
+    if target_host is None:
+        raise VPNProtocolError(STATUS_BAD_REQUEST, "Missing or invalid target_host", request_id)
+    try:
+        target_port = int(frame.get("target_port"))
+    except (TypeError, ValueError):
+        raise VPNProtocolError(STATUS_BAD_REQUEST, "Missing or invalid target_port", request_id)
+    if not 1 <= target_port <= 65535:
+        raise VPNProtocolError(STATUS_BAD_REQUEST, "target_port out of range", request_id)
+    return StreamTunnelRequest(
+        request_id=request_id,
+        token=str(frame.get("token", "")),
+        target_host=target_host,
+        target_port=target_port,
+    )
+
+
 def build_success_response(request_id: str, payload: bytes) -> dict[str, Any]:
     return {
         "version": PROTOCOL_VERSION,
@@ -123,6 +175,17 @@ def build_success_response(request_id: str, payload: bytes) -> dict[str, Any]:
         "status": STATUS_OK,
         "via": "mini-vpn",
         "payload": base64.b64encode(payload).decode("ascii"),
+    }
+
+
+def build_stream_ready_response(request_id: str) -> dict[str, Any]:
+    return {
+        "version": PROTOCOL_VERSION,
+        "id": request_id,
+        "status": STATUS_OK,
+        "via": "mini-vpn",
+        "stream": True,
+        "payload": None,
     }
 
 
@@ -138,19 +201,26 @@ def build_error_response(status: str, message: str, request_id: Optional[str] = 
 
 
 def decode_response_payload(frame: dict[str, Any], expected_id: str) -> bytes:
-    if frame.get("version") != PROTOCOL_VERSION:
-        raise VPNProtocolError(STATUS_BAD_REQUEST, "Unsupported response version")
-    if frame.get("id") != expected_id:
-        raise VPNProtocolError(STATUS_BAD_REQUEST, "Response id mismatch")
-    if frame.get("status") != STATUS_OK:
-        raise VPNProtocolError(str(frame.get("status") or STATUS_ERROR), str(frame.get("message") or "VPN error"))
-    payload = _string_or_none(frame.get("payload"))
+    ensure_ok_response(frame, expected_id)
+    payload = frame.get("payload")
+    if payload == "":
+        return b""
+    payload = _string_or_none(payload)
     if payload is None:
         raise VPNProtocolError(STATUS_BAD_REQUEST, "Response missing payload")
     try:
         return base64.b64decode(payload.encode("ascii"), validate=True)
     except (ValueError, TypeError) as exc:
         raise VPNProtocolError(STATUS_BAD_REQUEST, "Response payload must be base64") from exc
+
+
+def ensure_ok_response(frame: dict[str, Any], expected_id: str) -> None:
+    if frame.get("version") != PROTOCOL_VERSION:
+        raise VPNProtocolError(STATUS_BAD_REQUEST, "Unsupported response version")
+    if frame.get("id") != expected_id:
+        raise VPNProtocolError(STATUS_BAD_REQUEST, "Response id mismatch")
+    if frame.get("status") != STATUS_OK:
+        raise VPNProtocolError(str(frame.get("status") or STATUS_ERROR), str(frame.get("message") or "VPN error"))
 
 
 def _string_or_none(value: Any) -> Optional[str]:

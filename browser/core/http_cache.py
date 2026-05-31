@@ -8,6 +8,7 @@ Only caches 200 OK GET responses. Skips requests/responses with
 Cookie/Set-Cookie headers or Cache-Control: no-store.
 """
 
+import asyncio
 import hashlib
 import json
 import os
@@ -90,6 +91,12 @@ class HTTPCache:
         self._max_entry_bytes = max_entry_mb * 1024 * 1024
         self._manifest: dict[str, Any] = {"entries": {}, "total_size": 0}
         self._loaded = False
+        self._async_lock: asyncio.Lock | None = None
+
+    def _get_async_lock(self) -> asyncio.Lock:
+        if self._async_lock is None:
+            self._async_lock = asyncio.Lock()
+        return self._async_lock
 
     def _ensure_loaded(self) -> None:
         if self._loaded:
@@ -271,3 +278,31 @@ class HTTPCache:
     def total_size_bytes(self) -> int:
         self._ensure_loaded()
         return self._manifest["total_size"]
+
+    async def lookup_async(self, scheme: str, host: str, port: int, path: str) -> Optional[CacheEntry]:
+        async with self._get_async_lock():
+            return await asyncio.to_thread(self.lookup, scheme, host, port, path)
+
+    async def store_async(
+        self,
+        scheme: str,
+        host: str,
+        port: int,
+        path: str,
+        status_code: int,
+        status_text: str,
+        headers: dict[str, str],
+        body_bytes: bytes,
+    ) -> Optional[CacheEntry]:
+        async with self._get_async_lock():
+            return await asyncio.to_thread(
+                self.store,
+                scheme,
+                host,
+                port,
+                path,
+                status_code,
+                status_text,
+                headers,
+                body_bytes,
+            )

@@ -1,10 +1,17 @@
+import asyncio
+import json
 import unittest
 import socket
 import threading
 import time
+from pathlib import Path
 from dnslib import DNSRecord
 
 TEST_PORT = 5353
+
+
+def _run_server(server):
+    asyncio.run(server.serve_forever())
 
 
 class TestDNSServer(unittest.TestCase):
@@ -13,13 +20,14 @@ class TestDNSServer(unittest.TestCase):
     def setUpClass(cls):
         from dns.server import DNSServer
         cls.server = DNSServer(port=TEST_PORT)
-        cls._thread = threading.Thread(target=cls.server.start, daemon=True)
+        cls._thread = threading.Thread(target=_run_server, args=(cls.server,), daemon=True)
         cls._thread.start()
         time.sleep(0.3)
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.stop()
+        asyncio.run_coroutine_threadsafe(cls.server.stop(), cls.server.loop).result(timeout=5)
+        cls._thread.join(timeout=2)
 
     def _send_query(self, domain: str, timeout: float = 2.0) -> bytes | None:
         from dns.wire import encode_query
@@ -45,7 +53,8 @@ class TestDNSServer(unittest.TestCase):
         record = DNSRecord.parse(data)
         self.assertEqual(record.header.rcode, 0)
         self.assertGreater(len(record.rr), 0)
-        self.assertEqual(str(record.rr[0].rdata), "10.178.52.128")
+        records = json.loads((Path(__file__).resolve().parents[1] / "dns_records.json").read_text(encoding="utf-8"))
+        self.assertEqual(str(record.rr[0].rdata), records["myweb.local"]["ip"])
 
     def test_unknown_domain_returns_nxdomain(self):
         data = self._send_query("nonexistent.local")

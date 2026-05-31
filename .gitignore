@@ -12,9 +12,14 @@ venv/
 browser_state.json
 *.mdc
 key.pem
+*.db-wal
+*.db-shm
 
 # Browser state (generated at runtime)
+browser/data/
 cookies.json
+device_profile.key
+remembered_profiles.json
 phishing_rules.json
 webengine-profile/
 webengine-cache/

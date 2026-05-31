@@ -1,15 +1,14 @@
-import socket
-import ssl
-import signal
-import threading
+import asyncio
 import json
+import ssl
+import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
 from server.shared.response import Response, build_response
 from server.shared.security import apply_security_headers
 from server.gateway.proxy import proxy_request
 from server.gateway.balancer import BackendPool
 from server.gateway.metrics import Metrics
+from server.shared.access_log import log_access, log_event, request_line_from_raw
 
 
 class GatewayServer:
@@ -21,56 +20,73 @@ class GatewayServer:
         self._node_id = node_id
         self._pool = BackendPool(backends)
         self._metrics = Metrics()
-        self._executor = ThreadPoolExecutor(max_workers=max_workers)
-        self._shutdown = threading.Event()
         self._tls_cert = tls_cert
         self._tls_key = tls_key
-        self._sock: socket.socket | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._shutdown: asyncio.Event | None = None
+        self._server: asyncio.AbstractServer | None = None
 
-    def start(self):
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.bind((self._host, self._port))
-        self._sock.listen(128)
-        self._sock.settimeout(1.0)
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._loop
 
+    async def start(self):
+        if self._server is not None:
+            return
+        self._loop = asyncio.get_running_loop()
+        self._shutdown = asyncio.Event()
+        ssl_ctx = None
         if self._tls_cert and self._tls_key:
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ctx.load_cert_chain(self._tls_cert, self._tls_key)
-            self._sock = ctx.wrap_socket(self._sock, server_side=True)
+            ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_ctx.load_cert_chain(self._tls_cert, self._tls_key)
+        self._server = await asyncio.start_server(
+            self._handle_client,
+            self._host,
+            self._port,
+            backlog=128,
+            ssl=ssl_ctx,
+        )
 
-        print(f"[gateway] listening on {self._host}:{self._port}")
+        tls_state = "on" if ssl_ctx is not None else "off"
+        backend_urls = ",".join(item["url"] for item in self._pool.status()["backends"])
+        log_event(
+            "gateway",
+            f"{self._node_id} listening on {self._host}:{self._port} "
+            f"tls={tls_state} backends={backend_urls}",
+        )
+
+    async def serve_forever(self):
+        await self.start()
+        if self._shutdown is None:
+            return
         try:
-            signal.signal(signal.SIGTERM, lambda s, f: self.stop())
-            signal.signal(signal.SIGINT, lambda s, f: self.stop())
-        except ValueError:
-            pass
+            await self._shutdown.wait()
+        finally:
+            await self.stop()
 
-        while not self._shutdown.is_set():
-            try:
-                conn, addr = self._sock.accept()
-                self._metrics.inc_connections()
-                self._executor.submit(self._handle_client, conn, addr)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
+    async def stop(self):
+        if self._shutdown is not None:
+            self._shutdown.set()
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+            self._server = None
 
-    def stop(self):
-        self._shutdown.set()
-        self._executor.shutdown(wait=True)
-        if self._sock:
-            self._sock.close()
-
-    def _handle_client(self, conn: socket.socket, addr: tuple):
+    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        started_at = time.perf_counter()
+        peer = writer.get_extra_info("peername")
+        method = "-"
+        target = "-"
+        self._metrics.inc_connections()
         try:
-            conn.settimeout(30)
-            raw = self._recv_all(conn)
+            raw = await self._recv_all(reader)
             if not raw:
                 return
             self._metrics.inc_requests()
+            method, target = request_line_from_raw(raw)
 
             target_line = raw.split(b"\r\n")[0]
+            log_extra = f"node={self._node_id} route=internal"
             if b" /health" in target_line:
                 resp = Response(200, body=b'{"status":"ok","node":"' + self._node_id.encode() + b'"}',
                                headers={"content-type": "application/json"})
@@ -83,25 +99,50 @@ class GatewayServer:
                 resp = Response(200, body=json.dumps(status_data).encode(),
                                headers={"content-type": "application/json"})
             else:
-                resp = proxy_request(raw, self._pool, self._node_id)
+                proxy_result = await proxy_request(raw, self._pool, self._node_id)
+                resp = proxy_result.response
+                log_extra = (
+                    f"node={self._node_id} route=proxy upstream={proxy_result.upstream or '-'} "
+                    f"attempts={proxy_result.attempts}"
+                )
+                if proxy_result.error:
+                    log_extra = f"{log_extra} error={proxy_result.error}"
 
-            apply_security_headers(resp.headers)
-            conn.sendall(build_response(
+            scheme = "https" if self._tls_cert and self._tls_key else "http"
+            apply_security_headers(resp.headers, scheme=scheme)
+            writer.write(build_response(
                 status_code=resp.status_code,
                 headers=resp.headers,
                 body=resp.body or b"",
             ))
+            await writer.drain()
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            log_access("gateway", peer, method, target, resp.status_code, duration_ms, extra=log_extra)
         except Exception:
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            log_access(
+                "gateway",
+                peer,
+                method,
+                target,
+                "ERROR",
+                duration_ms,
+                extra=f"node={self._node_id}",
+            )
             traceback.print_exc()
         finally:
             self._metrics.dec_connections()
-            conn.close()
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
 
-    def _recv_all(self, conn: socket.socket) -> bytes:
+    async def _recv_all(self, reader: asyncio.StreamReader) -> bytes:
         data = b""
         while True:
             try:
-                chunk = conn.recv(65536)
+                chunk = await asyncio.wait_for(reader.read(65536), timeout=30)
                 if not chunk:
                     break
                 data += chunk
@@ -113,7 +154,7 @@ class GatewayServer:
                             break
                     else:
                         break
-            except socket.timeout:
+            except TimeoutError:
                 break
         return data
 

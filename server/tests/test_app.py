@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 import threading
 import time
@@ -11,28 +12,32 @@ from server.app.server import AppServer
 def _wait_for_server(host: str, port: int, deadline: float):
     while time.time() < deadline:
         try:
-            s = socket.socket()
-            s.settimeout(0.5)
-            s.connect((host, port))
-            s.close()
-            return
+            with socket.socket() as s:
+                s.settimeout(0.5)
+                s.connect((host, port))
+                return
         except (ConnectionRefusedError, OSError):
             time.sleep(0.05)
     raise RuntimeError(f"Server {host}:{port} did not start within deadline")
 
 
+def _run_server(server):
+    asyncio.run(server.serve_forever())
+
+
 class TestAppServer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        init_schema()
+        asyncio.run(init_schema())
         cls.server = AppServer("127.0.0.1", 8099, max_workers=4)
-        cls._thread = threading.Thread(target=cls.server.start, daemon=True)
+        cls._thread = threading.Thread(target=_run_server, args=(cls.server,), daemon=True)
         cls._thread.start()
         _wait_for_server("127.0.0.1", 8099, time.time() + 5)
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.stop()
+        asyncio.run_coroutine_threadsafe(cls.server.stop(), cls.server.loop).result(timeout=5)
+        cls._thread.join(timeout=2)
 
     def _request(self, method, path, body=None, headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", 8099, timeout=5)

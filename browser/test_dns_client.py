@@ -44,14 +44,14 @@ class FakeSocket:
         self.closed = True
 
 
-class TestDNSClient(unittest.TestCase):
-    def test_query_uses_wire_format_and_converts_ttl_to_expiry(self):
+class TestDNSClient(unittest.IsolatedAsyncioTestCase):
+    async def test_query_uses_wire_format_and_converts_ttl_to_expiry(self):
         fake_socket = FakeSocket(_wire_response(ip="127.0.0.1", ttl=30))
         client = DNSClient(server_host="127.0.0.1", server_port=53, enable_cache=False)
 
         with patch("browser.core.dns_client.socket.socket", return_value=fake_socket):
             with patch("browser.core.dns_client.time.time", return_value=1000.0):
-                result = client.resolve("Example.Local.")
+                result = await client.resolve("Example.Local.")
 
         self.assertEqual(result.domain, "example.local")
         self.assertEqual(result.ip, "127.0.0.1")
@@ -62,17 +62,17 @@ class TestDNSClient(unittest.TestCase):
         self.assertEqual(str(sent_q.qname).rstrip("."), "example.local")
         self.assertEqual(sent_q.qtype, QTYPE.A)
 
-    def test_nxdomain_raises(self):
+    async def test_nxdomain_raises(self):
         fake_socket = FakeSocket(_wire_response(rcode=RCODE.NXDOMAIN))
         client = DNSClient(enable_cache=False)
 
         with patch("browser.core.dns_client.socket.socket", return_value=fake_socket):
             with self.assertRaises(DNSError) as ctx:
-                client.resolve("unknown.local")
+                await client.resolve("unknown.local")
 
         self.assertIn("error", str(ctx.exception).lower())
 
-    def test_cache_hit_returns_without_socket_call(self):
+    async def test_cache_hit_returns_without_socket_call(self):
         client = DNSClient(enable_cache=True)
         client._cache["example.local"] = DNSResult(
             domain="example.local",
@@ -85,10 +85,24 @@ class TestDNSClient(unittest.TestCase):
                 "browser.core.dns_client.socket.socket",
                 side_effect=AssertionError("socket should not be created"),
             ):
-                result = client.resolve("example.local")
+                result = await client.resolve("example.local")
 
         self.assertTrue(result.from_cache)
         self.assertEqual(result.ip, "127.0.0.1")
+
+    async def test_ipv4_literal_bypasses_dns_query(self):
+        client = DNSClient(enable_cache=True)
+
+        with patch(
+            "browser.core.dns_client.socket.socket",
+            side_effect=AssertionError("socket should not be created for IPv4 literals"),
+        ):
+            result = await client.resolve("127.0.0.1")
+
+        self.assertEqual(result.domain, "127.0.0.1")
+        self.assertEqual(result.ip, "127.0.0.1")
+        self.assertFalse(result.from_cache)
+        self.assertIsNone(result.expire_at)
 
 
 if __name__ == "__main__":

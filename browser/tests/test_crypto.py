@@ -1,9 +1,6 @@
-"""Tests for AES-GCM encryption in profile storage."""
+"""Tests for encrypted browser profile crypto helpers."""
 import unittest
-import base64
 import hashlib
-import hmac
-import json
 import secrets
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -29,22 +26,21 @@ class TestCrypto(unittest.TestCase):
             aesgcm.decrypt(nonce, bytes(tampered), None)
 
     def test_encrypt_decrypt_json_v2(self):
-        from browser.core.storage import BrowserStorage, StorageError
-        key = hashlib.pbkdf2_hmac("sha256", b"password", b"testsalt", 210000, dklen=32)
-        storage = BrowserStorage.__new__(BrowserStorage)
-        encrypted = storage._encrypt_json({"hello": "world"}, key)
+        from browser.core.profile_crypto import decrypt_json, derive_password_key, encrypt_json
+        key = derive_password_key("password", "0123456789abcdeffedcba9876543210")
+        encrypted = encrypt_json({"hello": "world"}, key)
         self.assertTrue(encrypted.startswith("enc:v2:"))
-        decrypted = storage._decrypt_json(encrypted, key)
+        decrypted = decrypt_json(encrypted, key)
         self.assertEqual(decrypted, {"hello": "world"})
 
     def test_encrypt_json_wrong_key_fails(self):
-        from browser.core.storage import BrowserStorage, StorageError
-        key1 = hashlib.pbkdf2_hmac("sha256", b"pass1", b"saltx", 210000, dklen=32)
-        key2 = hashlib.pbkdf2_hmac("sha256", b"pass2", b"saltx", 210000, dklen=32)
-        storage = BrowserStorage.__new__(BrowserStorage)
-        encrypted = storage._encrypt_json("secret", key1)
-        with self.assertRaises(Exception):
-            storage._decrypt_json(encrypted, key2)
+        from browser.core.profile_crypto import ProfileCryptoError, decrypt_json, derive_password_key, encrypt_json
+        salt_hex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        key1 = derive_password_key("pass1", salt_hex)
+        key2 = derive_password_key("pass2", salt_hex)
+        encrypted = encrypt_json("secret", key1)
+        with self.assertRaises(ProfileCryptoError):
+            decrypt_json(encrypted, key2)
 
 
 if __name__ == "__main__":

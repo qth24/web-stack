@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 import threading
 import time
@@ -11,14 +12,17 @@ from server.gateway.server import GatewayServer
 def _wait_for_server(host: str, port: int, deadline: float):
     while time.time() < deadline:
         try:
-            s = socket.socket()
-            s.settimeout(0.5)
-            s.connect((host, port))
-            s.close()
-            return
+            with socket.socket() as s:
+                s.settimeout(0.5)
+                s.connect((host, port))
+                return
         except (ConnectionRefusedError, OSError):
             time.sleep(0.05)
     raise RuntimeError(f"Server {host}:{port} did not start within deadline")
+
+
+def _run_server(server):
+    asyncio.run(server.serve_forever())
 
 
 class EchoHandler(http.server.BaseHTTPRequestHandler):
@@ -79,14 +83,14 @@ class TestGatewayServer(unittest.TestCase):
             max_workers=4,
         )
         cls._gateway_thread = threading.Thread(
-            target=cls._gateway.start, daemon=True
+            target=_run_server, args=(cls._gateway,), daemon=True
         )
         cls._gateway_thread.start()
         _wait_for_server("127.0.0.1", cls._gateway_port, time.time() + 5)
 
     @classmethod
     def tearDownClass(cls):
-        cls._gateway.stop()
+        asyncio.run_coroutine_threadsafe(cls._gateway.stop(), cls._gateway.loop).result(timeout=5)
         cls._backend.shutdown()
         cls._backend_thread.join(timeout=2)
         cls._gateway_thread.join(timeout=2)

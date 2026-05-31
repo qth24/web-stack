@@ -17,8 +17,11 @@ def serve_static(target: str) -> Response | None:
     """Serve a static file from PUBLIC_DIR. Returns Response or None."""
     global PUBLIC_DIR
     if PUBLIC_DIR is None:
-        return Response(404, body=b"Not Found")
-    clean = os.path.normpath(target.lstrip("/"))
+        return None
+    clean_target = target.lstrip("/")
+    if clean_target.startswith("static/"):
+        clean_target = clean_target[len("static/"):]
+    clean = os.path.normpath(clean_target)
     filepath = os.path.join(PUBLIC_DIR, clean)
     real = os.path.realpath(filepath)
     real_root = os.path.realpath(PUBLIC_DIR)

@@ -1,207 +1,1610 @@
 {
-  "myweb.local": {"ip": "10.178.52.128", "ttl": 60},
-  "example.local": {"ip": "10.178.52.128", "ttl": 60},
-  "web.local": {"ip": "10.178.52.128", "ttl": 60},
-  "api.local": {"ip": "10.178.52.128", "ttl": 60},
-  "test.local": {"ip": "10.178.52.128", "ttl": 60},
-  "google.com": {"ip": "142.250.199.78", "ttl": 296},
-  "facebook.com": {"ip": "157.240.15.35", "ttl": 6},
-  "youtube.com": {"ip": "142.250.198.206", "ttl": 144},
-  "twitter.com": {"ip": "162.159.140.229", "ttl": 28},
-  "instagram.com": {"ip": "157.240.15.174", "ttl": 60},
-  "linkedin.com": {"ip": "150.171.22.12", "ttl": 138},
-  "reddit.com": {"ip": "151.101.65.140", "ttl": 169},
-  "wikipedia.org": {"ip": "103.102.166.224", "ttl": 144},
-  "amazon.com": {"ip": "98.82.161.185", "ttl": 218},
-  "netflix.com": {"ip": "54.170.196.176", "ttl": 60},
-  "microsoft.com": {"ip": "150.171.110.70", "ttl": 3261},
-  "apple.com": {"ip": "17.253.144.10", "ttl": 801},
-  "github.com": {"ip": "20.205.243.166", "ttl": 60},
-  "stackoverflow.com": {"ip": "198.252.206.1", "ttl": 300},
-  "medium.com": {"ip": "162.159.152.4", "ttl": 300},
-  "quora.com": {"ip": "32.199.71.238", "ttl": 60},
-  "yahoo.com": {"ip": "98.137.11.164", "ttl": 1038},
-  "bing.com": {"ip": "150.171.27.10", "ttl": 903},
-  "duckduckgo.com": {"ip": "20.204.244.192", "ttl": 21},
-  "zoom.us": {"ip": "170.114.52.2", "ttl": 60},
-  "slack.com": {"ip": "18.136.169.56", "ttl": 60},
-  "discord.com": {"ip": "162.159.128.233", "ttl": 300},
-  "spotify.com": {"ip": "35.186.224.24", "ttl": 300},
-  "twitch.tv": {"ip": "151.101.2.167", "ttl": 2482},
-  "bbc.com": {"ip": "151.101.0.81", "ttl": 300},
-  "cnn.com": {"ip": "151.101.195.5", "ttl": 60},
-  "nytimes.com": {"ip": "151.101.129.164", "ttl": 120},
-  "theguardian.com": {"ip": "151.101.129.111", "ttl": 3600},
-  "forbes.com": {"ip": "151.101.2.49", "ttl": 21600},
-  "bloomberg.com": {"ip": "3.33.146.110", "ttl": 21600},
-  "adobe.com": {"ip": "118.69.17.168", "ttl": 20},
-  "dropbox.com": {"ip": "162.125.248.18", "ttl": 33},
-  "cloudflare.com": {"ip": "104.16.133.229", "ttl": 300},
-  "digitalocean.com": {"ip": "104.19.173.68", "ttl": 300},
-  "heroku.com": {"ip": "192.0.66.110", "ttl": 300},
-  "vercel.app": {"ip": "64.29.17.67", "ttl": 300},
-  "netlify.com": {"ip": "3.33.186.135", "ttl": 300},
-  "badssl.com": {"ip": "104.154.89.105", "ttl": 300},
-  "httpforever.com": {"ip": "146.190.62.39", "ttl": 300},
-  "info.cern.ch": {"ip": "188.184.67.127", "ttl": 900},
-  "example.com": {"ip": "172.66.147.243", "ttl": 300},
-  "example.org": {"ip": "104.20.26.136", "ttl": 300},
-  "httpbin.org": {"ip": "44.216.249.42", "ttl": 30},
-  "nasa.gov": {"ip": "192.0.66.108", "ttl": 600},
-  "whitehouse.gov": {"ip": "192.0.66.51", "ttl": 300},
-  "un.org": {"ip": "157.150.185.49", "ttl": 300},
-  "who.int": {"ip": "192.133.11.1", "ttl": 900},
-  "mit.edu": {"ip": "23.15.150.186", "ttl": 20},
-  "stanford.edu": {"ip": "171.67.215.200", "ttl": 1800},
-  "harvard.edu": {"ip": "192.0.66.20", "ttl": 300},
-  "tiktok.com": {"ip": "96.17.180.51", "ttl": 30},
-  "whatsapp.com": {"ip": "57.144.153.32", "ttl": 30},
-  "messenger.com": {"ip": "57.144.150.141", "ttl": 39},
-  "pinterest.com": {"ip": "151.101.0.84", "ttl": 594},
-  "snapchat.com": {"ip": "34.149.46.130", "ttl": 30},
-  "telegram.org": {"ip": "149.154.167.99", "ttl": 384},
-  "openai.com": {"ip": "172.64.154.211", "ttl": 60},
-  "chatgpt.com": {"ip": "172.64.155.209", "ttl": 76},
-  "paypal.com": {"ip": "151.101.195.1", "ttl": 160},
-  "ebay.com": {"ip": "23.215.7.31", "ttl": 30},
-  "walmart.com": {"ip": "23.207.192.173", "ttl": 30},
-  "target.com": {"ip": "151.101.130.187", "ttl": 1697},
-  "etsy.com": {"ip": "151.101.65.224", "ttl": 2449},
-  "shopify.com": {"ip": "23.227.38.33", "ttl": 30},
-  "aliexpress.com": {"ip": "47.246.173.30", "ttl": 30},
-  "alibaba.com": {"ip": "47.246.136.52", "ttl": 38},
-  "booking.com": {"ip": "108.157.254.120", "ttl": 46},
-  "airbnb.com": {"ip": "166.117.189.176", "ttl": 104},
-  "tripadvisor.com": {"ip": "13.249.231.72", "ttl": 51},
-  "expedia.com": {"ip": "23.52.40.138", "ttl": 30},
-  "uber.com": {"ip": "69.48.216.4", "ttl": 44},
-  "lyft.com": {"ip": "13.35.36.28", "ttl": 60},
-  "doordash.com": {"ip": "104.18.35.30", "ttl": 82},
-  "airbnb.org": {"ip": "166.117.189.176", "ttl": 300},
-  "salesforce.com": {"ip": "104.109.11.129", "ttl": 52},
-  "oracle.com": {"ip": "138.1.33.162", "ttl": 30},
-  "ibm.com": {"ip": "118.215.81.142", "ttl": 30},
-  "intel.com": {"ip": "13.91.95.74", "ttl": 300},
-  "amd.com": {"ip": "23.41.36.125", "ttl": 30},
-  "nvidia.com": {"ip": "34.194.97.138", "ttl": 3600},
-  "dell.com": {"ip": "143.166.136.12", "ttl": 537},
-  "hp.com": {"ip": "54.192.100.55", "ttl": 30},
-  "lenovo.com": {"ip": "104.69.42.39", "ttl": 30},
-  "asus.com": {"ip": "103.10.4.227", "ttl": 3600},
-  "samsung.com": {"ip": "211.45.27.231", "ttl": 217},
-  "sony.com": {"ip": "44.218.59.236", "ttl": 228},
-  "lg.com": {"ip": "13.248.146.151", "ttl": 300},
-  "huawei.com": {"ip": "121.37.49.12", "ttl": 471},
-  "xiaomi.com": {"ip": "124.251.34.141", "ttl": 103},
-  "cisco.com": {"ip": "72.163.4.185", "ttl": 476},
-  "atlassian.com": {"ip": "65.9.168.37", "ttl": 60},
-  "jira.com": {"ip": "13.227.180.4", "ttl": 60},
-  "bitbucket.org": {"ip": "13.200.41.135", "ttl": 48},
-  "gitlab.com": {"ip": "172.65.251.78", "ttl": 127},
-  "npmjs.com": {"ip": "104.17.134.117", "ttl": 69},
-  "python.org": {"ip": "151.101.0.223", "ttl": 260},
-  "nodejs.org": {"ip": "104.16.212.131", "ttl": 300},
-  "mozilla.org": {"ip": "35.190.14.201", "ttl": 241},
-  "firefox.com": {"ip": "35.190.14.201", "ttl": 277},
-  "cloud.google.com": {"ip": "142.251.10.113", "ttl": 116},
-  "aws.amazon.com": {"ip": "13.35.163.81", "ttl": 45},
-  "azure.microsoft.com": {"ip": "23.41.38.179", "ttl": 30},
-  "firebase.google.com": {"ip": "74.125.130.102", "ttl": 113},
-  "kubernetes.io": {"ip": "3.33.186.135", "ttl": 3397},
-  "docker.com": {"ip": "23.185.0.4", "ttl": 61},
-  "ubuntu.com": {"ip": "185.125.190.21", "ttl": 30},
-  "debian.org": {"ip": "151.101.2.132", "ttl": 103},
-  "redhat.com": {"ip": "52.200.142.250", "ttl": 3452},
-  "linux.org": {"ip": "172.67.73.26", "ttl": 97},
-  "archlinux.org": {"ip": "209.126.35.79", "ttl": 60},
-  "pythonanywhere.com": {"ip": "35.173.69.207", "ttl": 60},
-  "replit.com": {"ip": "172.64.152.210", "ttl": 88},
-  "codepen.io": {"ip": "104.16.163.32", "ttl": 90},
-  "codesandbox.io": {"ip": "172.64.144.247", "ttl": 300},
-  "figma.com": {"ip": "99.86.20.103", "ttl": 60},
-  "canva.com": {"ip": "13.35.238.119", "ttl": 37},
-  "dribbble.com": {"ip": "13.225.177.111", "ttl": 2033},
-  "behance.net": {"ip": "151.101.193.197", "ttl": 118},
-  "unsplash.com": {"ip": "151.101.129.181", "ttl": 2104},
-  "pexels.com": {"ip": "104.18.67.220", "ttl": 300},
-  "shutterstock.com": {"ip": "75.2.58.105", "ttl": 226},
-  "istockphoto.com": {"ip": "65.8.76.59", "ttl": 60},
-  "imdb.com": {"ip": "98.82.155.134", "ttl": 799},
-  "rottentomatoes.com": {"ip": "23.215.7.25", "ttl": 30},
-  "hulu.com": {"ip": "104.88.71.80", "ttl": 30},
-  "disneyplus.com": {"ip": "34.110.155.89", "ttl": 34},
-  "max.com": {"ip": "3.169.71.3", "ttl": 60},
-  "primevideo.com": {"ip": "13.249.231.56", "ttl": 30},
-  "soundcloud.com": {"ip": "52.84.150.57", "ttl": 30},
-  "bandcamp.com": {"ip": "151.101.1.91", "ttl": 3600},
-  "applemusic.com": {"ip": "17.253.142.4", "ttl": 300},
-  "last.fm": {"ip": "34.96.123.111", "ttl": 79},
-  "genius.com": {"ip": "104.18.23.208", "ttl": 184},
-  "goodreads.com": {"ip": "44.215.118.51", "ttl": 60},
-  "coursera.org": {"ip": "13.35.36.98", "ttl": 60},
-  "edx.org": {"ip": "13.35.202.122", "ttl": 60},
-  "udemy.com": {"ip": "104.16.142.237", "ttl": 300},
-  "khanacademy.org": {"ip": "13.35.36.15", "ttl": 60},
-  "duolingo.com": {"ip": "52.45.240.203", "ttl": 30},
-  "codecademy.com": {"ip": "104.17.183.120", "ttl": 161},
-  "freecodecamp.org": {"ip": "104.26.2.33", "ttl": 74},
-  "w3schools.com": {"ip": "76.223.115.82", "ttl": 60},
-  "geeksforgeeks.org": {"ip": "13.35.163.61", "ttl": 60},
-  "leetcode.com": {"ip": "172.66.154.160", "ttl": 34},
-  "hackerrank.com": {"ip": "32.196.170.59", "ttl": 60},
-  "courier.com": {"ip": "76.76.21.21", "ttl": 60},
-  "mailchimp.com": {"ip": "23.37.88.103", "ttl": 30},
-  "sendgrid.com": {"ip": "54.199.88.16", "ttl": 90},
-  "twilio.com": {"ip": "44.199.52.48", "ttl": 60},
-  "stripe.com": {"ip": "198.202.176.111", "ttl": 30},
-  "squareup.com": {"ip": "162.159.137.66", "ttl": 60},
-  "coinbase.com": {"ip": "172.64.152.241", "ttl": 300},
-  "binance.com": {"ip": "52.198.57.38", "ttl": 60},
-  "kraken.com": {"ip": "104.17.185.205", "ttl": 300},
-  "reuters.com": {"ip": "155.46.172.255", "ttl": 193},
-  "apnews.com": {"ip": "104.16.22.8", "ttl": 207},
-  "washingtonpost.com": {"ip": "13.249.231.27", "ttl": 60},
-  "wsj.com": {"ip": "13.35.163.96", "ttl": 60},
-  "ft.com": {"ip": "151.101.130.46", "ttl": 385},
-  "economist.com": {"ip": "172.64.145.237", "ttl": 214},
-  "npr.org": {"ip": "13.35.238.111", "ttl": 60},
-  "cnbc.com": {"ip": "44.208.103.249", "ttl": 30},
-  "espn.com": {"ip": "99.86.20.44", "ttl": 30},
-  "nba.com": {"ip": "23.54.118.40", "ttl": 300},
-  "nfl.com": {"ip": "151.101.129.55", "ttl": 60},
-  "mlb.com": {"ip": "34.102.163.158", "ttl": 395},
-  "fifa.com": {"ip": "104.88.70.224", "ttl": 100},
-  "uefa.com": {"ip": "150.171.110.104", "ttl": 3359},
-  "steamcommunity.com": {"ip": "23.15.100.115", "ttl": 30},
-  "steampowered.com": {"ip": "23.50.43.97", "ttl": 30},
-  "epicgames.com": {"ip": "52.204.111.172", "ttl": 30},
-  "roblox.com": {"ip": "128.116.54.3", "ttl": 44},
-  "minecraft.net": {"ip": "150.171.110.104", "ttl": 1327},
-  "playstation.com": {"ip": "13.52.89.229", "ttl": 30},
-  "xbox.com": {"ip": "20.112.250.133", "ttl": 116},
-  "nintendo.com": {"ip": "192.159.190.35", "ttl": 60},
-  "ea.com": {"ip": "23.41.36.193", "ttl": 30},
-  "riotgames.com": {"ip": "23.215.7.15", "ttl": 30},
-  "blizzard.com": {"ip": "166.117.48.155", "ttl": 120},
-  "cloudflarestatus.com": {"ip": "35.201.124.30", "ttl": 50},
-  "statuspage.io": {"ip": "104.192.140.22", "ttl": 60},
-  "fastly.com": {"ip": "151.101.193.57", "ttl": 3600},
-  "akamai.com": {"ip": "23.52.40.121", "ttl": 30},
-  "namecheap.com": {"ip": "198.54.117.250", "ttl": 60},
-  "godaddy.com": {"ip": "160.153.0.1", "ttl": 276},
-  "ionos.com": {"ip": "74.208.4.77", "ttl": 300},
-  "hostinger.com": {"ip": "104.19.149.80", "ttl": 166},
-  "bluehost.com": {"ip": "104.18.41.208", "ttl": 30},
-  "wordpress.com": {"ip": "192.0.78.9", "ttl": 259},
-  "wordpress.org": {"ip": "198.143.164.252", "ttl": 600},
-  "wix.com": {"ip": "199.15.163.133", "ttl": 2235},
-  "squarespace.com": {"ip": "198.185.159.180", "ttl": 300},
-  "weebly.com": {"ip": "74.115.51.7", "ttl": 797},
-  "notion.so": {"ip": "208.103.161.2", "ttl": 300},
-  "trello.com": {"ip": "13.35.202.39", "ttl": 30},
-  "asana.com": {"ip": "3.33.186.135", "ttl": 30},
-  "monday.com": {"ip": "104.16.50.19", "ttl": 31},
-  "clickup.com": {"ip": "99.86.20.19", "ttl": 30},
-  "airtable.com": {"ip": "108.156.144.51", "ttl": 60},
-  "basecamp.com": {"ip": "104.18.14.58", "ttl": 300}
+  "adobe.com": {
+    "ip": "118.69.17.168",
+    "ttl": 20
+  },
+  "airbnb.com": {
+    "ip": "166.117.189.176",
+    "ttl": 104
+  },
+  "airbnb.org": {
+    "ip": "166.117.189.176",
+    "ttl": 300
+  },
+  "airtable.com": {
+    "ip": "108.156.144.51",
+    "ttl": 60
+  },
+  "akamai.com": {
+    "ip": "23.52.40.121",
+    "ttl": 30
+  },
+  "alibaba.com": {
+    "ip": "47.246.136.52",
+    "ttl": 38
+  },
+  "aliexpress.com": {
+    "ip": "47.246.173.30",
+    "ttl": 30
+  },
+  "amazon.com": {
+    "ip": "98.82.161.185",
+    "ttl": 218
+  },
+  "amd.com": {
+    "ip": "23.41.36.125",
+    "ttl": 30
+  },
+  "api.local": {
+    "ip": "127.0.0.1",
+    "ttl": 60
+  },
+  "apnews.com": {
+    "ip": "104.16.22.8",
+    "ttl": 207
+  },
+  "apple.com": {
+    "ip": "17.253.144.10",
+    "ttl": 801
+  },
+  "applemusic.com": {
+    "ip": "17.253.142.4",
+    "ttl": 300
+  },
+  "archlinux.org": {
+    "ip": "209.126.35.79",
+    "ttl": 60
+  },
+  "asana.com": {
+    "ip": "3.33.186.135",
+    "ttl": 30
+  },
+  "asus.com": {
+    "ip": "103.10.4.227",
+    "ttl": 3600
+  },
+  "atlassian.com": {
+    "ip": "65.9.168.37",
+    "ttl": 60
+  },
+  "aws.amazon.com": {
+    "ip": "13.35.163.81",
+    "ttl": 45
+  },
+  "azure.microsoft.com": {
+    "ip": "23.41.38.179",
+    "ttl": 30
+  },
+  "badssl.com": {
+    "ip": "104.154.89.105",
+    "ttl": 300
+  },
+  "bandcamp.com": {
+    "ip": "151.101.1.91",
+    "ttl": 3600
+  },
+  "basecamp.com": {
+    "ip": "104.18.14.58",
+    "ttl": 300
+  },
+  "bbc.com": {
+    "ip": "151.101.0.81",
+    "ttl": 300
+  },
+  "behance.net": {
+    "ip": "151.101.193.197",
+    "ttl": 118
+  },
+  "binance.com": {
+    "ip": "52.198.57.38",
+    "ttl": 60
+  },
+  "bing.com": {
+    "ip": "150.171.27.10",
+    "ttl": 903
+  },
+  "bitbucket.org": {
+    "ip": "13.200.41.135",
+    "ttl": 48
+  },
+  "blizzard.com": {
+    "ip": "166.117.48.155",
+    "ttl": 120
+  },
+  "bloomberg.com": {
+    "ip": "3.33.146.110",
+    "ttl": 21600
+  },
+  "bluehost.com": {
+    "ip": "104.18.41.208",
+    "ttl": 30
+  },
+  "booking.com": {
+    "ip": "108.157.254.120",
+    "ttl": 46
+  },
+  "canva.com": {
+    "ip": "13.35.238.119",
+    "ttl": 37
+  },
+  "chatgpt.com": {
+    "ip": "172.64.155.209",
+    "ttl": 76
+  },
+  "cisco.com": {
+    "ip": "72.163.4.185",
+    "ttl": 476
+  },
+  "clickup.com": {
+    "ip": "99.86.20.19",
+    "ttl": 30
+  },
+  "cloud.google.com": {
+    "ip": "142.251.10.113",
+    "ttl": 116
+  },
+  "cloudflare.com": {
+    "ip": "104.16.133.229",
+    "ttl": 300
+  },
+  "cloudflarestatus.com": {
+    "ip": "35.201.124.30",
+    "ttl": 50
+  },
+  "cnbc.com": {
+    "ip": "44.208.103.249",
+    "ttl": 30
+  },
+  "cnn.com": {
+    "ip": "151.101.195.5",
+    "ttl": 60
+  },
+  "codecademy.com": {
+    "ip": "104.17.183.120",
+    "ttl": 161
+  },
+  "codepen.io": {
+    "ip": "104.16.163.32",
+    "ttl": 90
+  },
+  "codesandbox.io": {
+    "ip": "172.64.144.247",
+    "ttl": 300
+  },
+  "coinbase.com": {
+    "ip": "172.64.152.241",
+    "ttl": 300
+  },
+  "courier.com": {
+    "ip": "76.76.21.21",
+    "ttl": 60
+  },
+  "coursera.org": {
+    "ip": "13.35.36.98",
+    "ttl": 60
+  },
+  "debian.org": {
+    "ip": "151.101.2.132",
+    "ttl": 103
+  },
+  "dell.com": {
+    "ip": "143.166.136.12",
+    "ttl": 537
+  },
+  "digitalocean.com": {
+    "ip": "104.19.173.68",
+    "ttl": 300
+  },
+  "discord.com": {
+    "ip": "162.159.128.233",
+    "ttl": 300
+  },
+  "disneyplus.com": {
+    "ip": "34.110.155.89",
+    "ttl": 34
+  },
+  "docker.com": {
+    "ip": "23.185.0.4",
+    "ttl": 61
+  },
+  "doordash.com": {
+    "ip": "104.18.35.30",
+    "ttl": 82
+  },
+  "dribbble.com": {
+    "ip": "13.225.177.111",
+    "ttl": 2033
+  },
+  "dropbox.com": {
+    "ip": "162.125.248.18",
+    "ttl": 33
+  },
+  "duckduckgo.com": {
+    "ip": "20.204.244.192",
+    "ttl": 21
+  },
+  "duolingo.com": {
+    "ip": "52.45.240.203",
+    "ttl": 30
+  },
+  "ea.com": {
+    "ip": "23.41.36.193",
+    "ttl": 30
+  },
+  "ebay.com": {
+    "ip": "23.215.7.31",
+    "ttl": 30
+  },
+  "economist.com": {
+    "ip": "172.64.145.237",
+    "ttl": 214
+  },
+  "edx.org": {
+    "ip": "13.35.202.122",
+    "ttl": 60
+  },
+  "epicgames.com": {
+    "ip": "52.204.111.172",
+    "ttl": 30
+  },
+  "espn.com": {
+    "ip": "99.86.20.44",
+    "ttl": 30
+  },
+  "etsy.com": {
+    "ip": "151.101.65.224",
+    "ttl": 2449
+  },
+  "example.com": {
+    "ip": "172.66.147.243",
+    "ttl": 300
+  },
+  "example.local": {
+    "ip": "127.0.0.1",
+    "ttl": 60
+  },
+  "example.org": {
+    "ip": "104.20.26.136",
+    "ttl": 300
+  },
+  "expedia.com": {
+    "ip": "23.52.40.138",
+    "ttl": 30
+  },
+  "facebook.com": {
+    "ip": "157.240.15.35",
+    "ttl": 6
+  },
+  "fastly.com": {
+    "ip": "151.101.193.57",
+    "ttl": 3600
+  },
+  "fifa.com": {
+    "ip": "104.88.70.224",
+    "ttl": 100
+  },
+  "figma.com": {
+    "ip": "99.86.20.103",
+    "ttl": 60
+  },
+  "firebase.google.com": {
+    "ip": "74.125.130.102",
+    "ttl": 113
+  },
+  "firefox.com": {
+    "ip": "35.190.14.201",
+    "ttl": 277
+  },
+  "forbes.com": {
+    "ip": "151.101.2.49",
+    "ttl": 21600
+  },
+  "freecodecamp.org": {
+    "ip": "104.26.2.33",
+    "ttl": 74
+  },
+  "ft.com": {
+    "ip": "151.101.130.46",
+    "ttl": 385
+  },
+  "geeksforgeeks.org": {
+    "ip": "13.35.163.61",
+    "ttl": 60
+  },
+  "genius.com": {
+    "ip": "104.18.23.208",
+    "ttl": 184
+  },
+  "github.com": {
+    "ip": "20.205.243.166",
+    "ttl": 60
+  },
+  "gitlab.com": {
+    "ip": "172.65.251.78",
+    "ttl": 127
+  },
+  "godaddy.com": {
+    "ip": "160.153.0.1",
+    "ttl": 276
+  },
+  "goodreads.com": {
+    "ip": "44.215.118.51",
+    "ttl": 60
+  },
+  "hackerrank.com": {
+    "ip": "32.196.170.59",
+    "ttl": 60
+  },
+  "harvard.edu": {
+    "ip": "192.0.66.20",
+    "ttl": 300
+  },
+  "heroku.com": {
+    "ip": "192.0.66.110",
+    "ttl": 300
+  },
+  "hostinger.com": {
+    "ip": "104.19.149.80",
+    "ttl": 166
+  },
+  "hp.com": {
+    "ip": "54.192.100.55",
+    "ttl": 30
+  },
+  "httpbin.org": {
+    "ip": "44.216.249.42",
+    "ttl": 30
+  },
+  "httpforever.com": {
+    "ip": "146.190.62.39",
+    "ttl": 300
+  },
+  "huawei.com": {
+    "ip": "121.37.49.12",
+    "ttl": 471
+  },
+  "hulu.com": {
+    "ip": "104.88.71.80",
+    "ttl": 30
+  },
+  "ibm.com": {
+    "ip": "118.215.81.142",
+    "ttl": 30
+  },
+  "imdb.com": {
+    "ip": "98.82.155.134",
+    "ttl": 799
+  },
+  "info.cern.ch": {
+    "ip": "188.184.67.127",
+    "ttl": 900
+  },
+  "instagram.com": {
+    "ip": "157.240.15.174",
+    "ttl": 60
+  },
+  "intel.com": {
+    "ip": "13.91.95.74",
+    "ttl": 300
+  },
+  "ionos.com": {
+    "ip": "74.208.4.77",
+    "ttl": 300
+  },
+  "istockphoto.com": {
+    "ip": "65.8.76.59",
+    "ttl": 60
+  },
+  "jira.com": {
+    "ip": "13.227.180.4",
+    "ttl": 60
+  },
+  "khanacademy.org": {
+    "ip": "13.35.36.15",
+    "ttl": 60
+  },
+  "kraken.com": {
+    "ip": "104.17.185.205",
+    "ttl": 300
+  },
+  "kubernetes.io": {
+    "ip": "3.33.186.135",
+    "ttl": 3397
+  },
+  "last.fm": {
+    "ip": "34.96.123.111",
+    "ttl": 79
+  },
+  "leetcode.com": {
+    "ip": "172.66.154.160",
+    "ttl": 34
+  },
+  "lenovo.com": {
+    "ip": "104.69.42.39",
+    "ttl": 30
+  },
+  "lg.com": {
+    "ip": "13.248.146.151",
+    "ttl": 300
+  },
+  "linkedin.com": {
+    "ip": "150.171.22.12",
+    "ttl": 138
+  },
+  "linux.org": {
+    "ip": "172.67.73.26",
+    "ttl": 97
+  },
+  "lyft.com": {
+    "ip": "13.35.36.28",
+    "ttl": 60
+  },
+  "mailchimp.com": {
+    "ip": "23.37.88.103",
+    "ttl": 30
+  },
+  "max.com": {
+    "ip": "3.169.71.3",
+    "ttl": 60
+  },
+  "medium.com": {
+    "ip": "162.159.152.4",
+    "ttl": 300
+  },
+  "messenger.com": {
+    "ip": "57.144.150.141",
+    "ttl": 39
+  },
+  "microsoft.com": {
+    "ip": "150.171.110.70",
+    "ttl": 3261
+  },
+  "minecraft.net": {
+    "ip": "150.171.110.104",
+    "ttl": 1327
+  },
+  "mit.edu": {
+    "ip": "23.15.150.186",
+    "ttl": 20
+  },
+  "mlb.com": {
+    "ip": "34.102.163.158",
+    "ttl": 395
+  },
+  "monday.com": {
+    "ip": "104.16.50.19",
+    "ttl": 31
+  },
+  "mozilla.org": {
+    "ip": "35.190.14.201",
+    "ttl": 241
+  },
+  "myweb.local": {
+    "ip": "127.0.0.1",
+    "ttl": 60
+  },
+  "namecheap.com": {
+    "ip": "198.54.117.250",
+    "ttl": 60
+  },
+  "nasa.gov": {
+    "ip": "192.0.66.108",
+    "ttl": 600
+  },
+  "nba.com": {
+    "ip": "23.54.118.40",
+    "ttl": 300
+  },
+  "netflix.com": {
+    "ip": "54.170.196.176",
+    "ttl": 60
+  },
+  "netlify.com": {
+    "ip": "3.33.186.135",
+    "ttl": 300
+  },
+  "nfl.com": {
+    "ip": "151.101.129.55",
+    "ttl": 60
+  },
+  "nintendo.com": {
+    "ip": "192.159.190.35",
+    "ttl": 60
+  },
+  "nodejs.org": {
+    "ip": "104.16.212.131",
+    "ttl": 300
+  },
+  "notion.so": {
+    "ip": "208.103.161.2",
+    "ttl": 300
+  },
+  "npmjs.com": {
+    "ip": "104.17.134.117",
+    "ttl": 69
+  },
+  "npr.org": {
+    "ip": "13.35.238.111",
+    "ttl": 60
+  },
+  "nvidia.com": {
+    "ip": "34.194.97.138",
+    "ttl": 3600
+  },
+  "nytimes.com": {
+    "ip": "151.101.129.164",
+    "ttl": 120
+  },
+  "openai.com": {
+    "ip": "172.64.154.211",
+    "ttl": 60
+  },
+  "oracle.com": {
+    "ip": "138.1.33.162",
+    "ttl": 30
+  },
+  "paypal.com": {
+    "ip": "151.101.195.1",
+    "ttl": 160
+  },
+  "pexels.com": {
+    "ip": "104.18.67.220",
+    "ttl": 300
+  },
+  "pinterest.com": {
+    "ip": "151.101.0.84",
+    "ttl": 594
+  },
+  "playstation.com": {
+    "ip": "13.52.89.229",
+    "ttl": 30
+  },
+  "primevideo.com": {
+    "ip": "13.249.231.56",
+    "ttl": 30
+  },
+  "python.org": {
+    "ip": "151.101.0.223",
+    "ttl": 260
+  },
+  "pythonanywhere.com": {
+    "ip": "35.173.69.207",
+    "ttl": 60
+  },
+  "quora.com": {
+    "ip": "32.199.71.238",
+    "ttl": 60
+  },
+  "reddit.com": {
+    "ip": "151.101.65.140",
+    "ttl": 169
+  },
+  "redhat.com": {
+    "ip": "52.200.142.250",
+    "ttl": 3452
+  },
+  "replit.com": {
+    "ip": "172.64.152.210",
+    "ttl": 88
+  },
+  "reuters.com": {
+    "ip": "155.46.172.255",
+    "ttl": 193
+  },
+  "riotgames.com": {
+    "ip": "23.215.7.15",
+    "ttl": 30
+  },
+  "roblox.com": {
+    "ip": "128.116.54.3",
+    "ttl": 44
+  },
+  "rottentomatoes.com": {
+    "ip": "23.215.7.25",
+    "ttl": 30
+  },
+  "salesforce.com": {
+    "ip": "104.109.11.129",
+    "ttl": 52
+  },
+  "samsung.com": {
+    "ip": "211.45.27.231",
+    "ttl": 217
+  },
+  "sendgrid.com": {
+    "ip": "54.199.88.16",
+    "ttl": 90
+  },
+  "shopify.com": {
+    "ip": "23.227.38.33",
+    "ttl": 30
+  },
+  "shutterstock.com": {
+    "ip": "75.2.58.105",
+    "ttl": 226
+  },
+  "slack.com": {
+    "ip": "18.136.169.56",
+    "ttl": 60
+  },
+  "snapchat.com": {
+    "ip": "34.149.46.130",
+    "ttl": 30
+  },
+  "sony.com": {
+    "ip": "44.218.59.236",
+    "ttl": 228
+  },
+  "soundcloud.com": {
+    "ip": "52.84.150.57",
+    "ttl": 30
+  },
+  "spotify.com": {
+    "ip": "35.186.224.24",
+    "ttl": 300
+  },
+  "squarespace.com": {
+    "ip": "198.185.159.180",
+    "ttl": 300
+  },
+  "squareup.com": {
+    "ip": "162.159.137.66",
+    "ttl": 60
+  },
+  "stackoverflow.com": {
+    "ip": "198.252.206.1",
+    "ttl": 300
+  },
+  "stanford.edu": {
+    "ip": "171.67.215.200",
+    "ttl": 1800
+  },
+  "statuspage.io": {
+    "ip": "104.192.140.22",
+    "ttl": 60
+  },
+  "steamcommunity.com": {
+    "ip": "23.15.100.115",
+    "ttl": 30
+  },
+  "steampowered.com": {
+    "ip": "23.50.43.97",
+    "ttl": 30
+  },
+  "stripe.com": {
+    "ip": "198.202.176.111",
+    "ttl": 30
+  },
+  "target.com": {
+    "ip": "151.101.130.187",
+    "ttl": 1697
+  },
+  "telegram.org": {
+    "ip": "149.154.167.99",
+    "ttl": 384
+  },
+  "test.local": {
+    "ip": "127.0.0.1",
+    "ttl": 60
+  },
+  "theguardian.com": {
+    "ip": "151.101.129.111",
+    "ttl": 3600
+  },
+  "tiktok.com": {
+    "ip": "96.17.180.51",
+    "ttl": 30
+  },
+  "trello.com": {
+    "ip": "13.35.202.39",
+    "ttl": 30
+  },
+  "tripadvisor.com": {
+    "ip": "13.249.231.72",
+    "ttl": 51
+  },
+  "twilio.com": {
+    "ip": "44.199.52.48",
+    "ttl": 60
+  },
+  "twitch.tv": {
+    "ip": "151.101.2.167",
+    "ttl": 2482
+  },
+  "twitter.com": {
+    "ip": "162.159.140.229",
+    "ttl": 28
+  },
+  "uber.com": {
+    "ip": "69.48.216.4",
+    "ttl": 44
+  },
+  "ubuntu.com": {
+    "ip": "185.125.190.21",
+    "ttl": 30
+  },
+  "udemy.com": {
+    "ip": "104.16.142.237",
+    "ttl": 300
+  },
+  "uefa.com": {
+    "ip": "150.171.110.104",
+    "ttl": 3359
+  },
+  "uit.edu.vn": {
+    "ip": "118.69.123.140",
+    "ttl": 300
+  },
+  "un.org": {
+    "ip": "157.150.185.49",
+    "ttl": 300
+  },
+  "unsplash.com": {
+    "ip": "151.101.129.181",
+    "ttl": 2104
+  },
+  "vercel.app": {
+    "ip": "64.29.17.67",
+    "ttl": 300
+  },
+  "w3schools.com": {
+    "ip": "76.223.115.82",
+    "ttl": 60
+  },
+  "walmart.com": {
+    "ip": "23.207.192.173",
+    "ttl": 30
+  },
+  "washingtonpost.com": {
+    "ip": "13.249.231.27",
+    "ttl": 60
+  },
+  "web.local": {
+    "ip": "127.0.0.1",
+    "ttl": 60
+  },
+  "weebly.com": {
+    "ip": "74.115.51.7",
+    "ttl": 797
+  },
+  "whatsapp.com": {
+    "ip": "57.144.153.32",
+    "ttl": 30
+  },
+  "whitehouse.gov": {
+    "ip": "192.0.66.51",
+    "ttl": 300
+  },
+  "who.int": {
+    "ip": "192.133.11.1",
+    "ttl": 900
+  },
+  "wix.com": {
+    "ip": "199.15.163.133",
+    "ttl": 2235
+  },
+  "wordpress.com": {
+    "ip": "192.0.78.9",
+    "ttl": 259
+  },
+  "wordpress.org": {
+    "ip": "198.143.164.252",
+    "ttl": 600
+  },
+  "wsj.com": {
+    "ip": "13.35.163.96",
+    "ttl": 60
+  },
+  "www.adobe.com": {
+    "ip": "118.69.17.170",
+    "ttl": 20
+  },
+  "www.airbnb.com": {
+    "ip": "23.32.74.114",
+    "ttl": 20
+  },
+  "www.airbnb.org": {
+    "ip": "23.32.74.113",
+    "ttl": 20
+  },
+  "www.airtable.com": {
+    "ip": "65.9.168.15",
+    "ttl": 60
+  },
+  "www.akamai.com": {
+    "ip": "23.32.74.128",
+    "ttl": 20
+  },
+  "www.alibaba.com": {
+    "ip": "23.196.70.145",
+    "ttl": 20
+  },
+  "www.aliexpress.com": {
+    "ip": "42.119.185.119",
+    "ttl": 20
+  },
+  "www.amazon.com": {
+    "ip": "13.249.235.124",
+    "ttl": 60
+  },
+  "www.amd.com": {
+    "ip": "42.119.185.62",
+    "ttl": 20
+  },
+  "www.apnews.com": {
+    "ip": "104.16.22.8",
+    "ttl": 300
+  },
+  "www.apple.com": {
+    "ip": "17.253.144.10",
+    "ttl": 801
+  },
+  "www.applemusic.com": {
+    "ip": "17.253.142.4",
+    "ttl": 300
+  },
+  "www.archlinux.org": {
+    "ip": "209.126.35.79",
+    "ttl": 60
+  },
+  "www.asana.com": {
+    "ip": "15.197.167.90",
+    "ttl": 300
+  },
+  "www.asus.com": {
+    "ip": "13.249.231.22",
+    "ttl": 60
+  },
+  "www.atlassian.com": {
+    "ip": "13.227.180.4",
+    "ttl": 60
+  },
+  "www.aws.amazon.com": {
+    "ip": "13.35.163.36",
+    "ttl": 60
+  },
+  "www.azure.microsoft.com": {
+    "ip": "20.112.250.133",
+    "ttl": 60
+  },
+  "www.badssl.com": {
+    "ip": "104.154.89.105",
+    "ttl": 300
+  },
+  "www.bandcamp.com": {
+    "ip": "151.101.65.91",
+    "ttl": 21600
+  },
+  "www.basecamp.com": {
+    "ip": "104.18.15.58",
+    "ttl": 300
+  },
+  "www.bbc.com": {
+    "ip": "151.101.64.81",
+    "ttl": 60
+  },
+  "www.behance.net": {
+    "ip": "151.101.129.197",
+    "ttl": 152
+  },
+  "www.binance.com": {
+    "ip": "13.249.231.129",
+    "ttl": 60
+  },
+  "www.bing.com": {
+    "ip": "23.32.74.106",
+    "ttl": 20
+  },
+  "www.bitbucket.org": {
+    "ip": "13.200.41.135",
+    "ttl": 60
+  },
+  "www.blizzard.com": {
+    "ip": "13.193.56.212",
+    "ttl": 60
+  },
+  "www.bloomberg.com": {
+    "ip": "151.101.65.73",
+    "ttl": 24
+  },
+  "www.bluehost.com": {
+    "ip": "172.64.146.48",
+    "ttl": 300
+  },
+  "www.booking.com": {
+    "ip": "3.165.102.3",
+    "ttl": 60
+  },
+  "www.canva.com": {
+    "ip": "103.169.142.21",
+    "ttl": 300
+  },
+  "www.chatgpt.com": {
+    "ip": "104.18.32.47",
+    "ttl": 300
+  },
+  "www.cisco.com": {
+    "ip": "23.196.68.92",
+    "ttl": 20
+  },
+  "www.clickup.com": {
+    "ip": "13.35.36.128",
+    "ttl": 60
+  },
+  "www.cloud.google.com": {
+    "ip": "142.250.197.238",
+    "ttl": 300
+  },
+  "www.cloudflare.com": {
+    "ip": "104.16.124.96",
+    "ttl": 300
+  },
+  "www.cloudflarestatus.com": {
+    "ip": "13.33.45.84",
+    "ttl": 60
+  },
+  "www.cnbc.com": {
+    "ip": "23.196.68.9",
+    "ttl": 20
+  },
+  "www.cnn.com": {
+    "ip": "151.101.195.5",
+    "ttl": 60
+  },
+  "www.codecademy.com": {
+    "ip": "104.17.183.120",
+    "ttl": 300
+  },
+  "www.codepen.io": {
+    "ip": "104.16.147.32",
+    "ttl": 300
+  },
+  "www.codesandbox.io": {
+    "ip": "104.18.43.9",
+    "ttl": 300
+  },
+  "www.coinbase.com": {
+    "ip": "104.18.35.15",
+    "ttl": 121
+  },
+  "www.courier.com": {
+    "ip": "172.66.40.134",
+    "ttl": 54
+  },
+  "www.coursera.org": {
+    "ip": "13.35.36.15",
+    "ttl": 60
+  },
+  "www.debian.org": {
+    "ip": "130.89.148.77",
+    "ttl": 42
+  },
+  "www.dell.com": {
+    "ip": "23.196.69.179",
+    "ttl": 20
+  },
+  "www.digitalocean.com": {
+    "ip": "104.19.173.68",
+    "ttl": 300
+  },
+  "www.discord.com": {
+    "ip": "162.159.136.232",
+    "ttl": 54
+  },
+  "www.disneyplus.com": {
+    "ip": "42.119.184.50",
+    "ttl": 20
+  },
+  "www.docker.com": {
+    "ip": "23.185.0.4",
+    "ttl": 300
+  },
+  "www.doordash.com": {
+    "ip": "172.64.151.31",
+    "ttl": 300
+  },
+  "www.dribbble.com": {
+    "ip": "3.131.150.69",
+    "ttl": 600
+  },
+  "www.dropbox.com": {
+    "ip": "162.125.81.18",
+    "ttl": 8
+  },
+  "www.duckduckgo.com": {
+    "ip": "20.204.244.192",
+    "ttl": 200
+  },
+  "www.duolingo.com": {
+    "ip": "108.157.254.122",
+    "ttl": 60
+  },
+  "www.ea.com": {
+    "ip": "23.196.68.141",
+    "ttl": 20
+  },
+  "www.ebay.com": {
+    "ip": "23.32.74.112",
+    "ttl": 20
+  },
+  "www.economist.com": {
+    "ip": "104.18.42.19",
+    "ttl": 300
+  },
+  "www.edx.org": {
+    "ip": "13.35.36.107",
+    "ttl": 60
+  },
+  "www.epicgames.com": {
+    "ip": "104.18.20.94",
+    "ttl": 55
+  },
+  "www.espn.com": {
+    "ip": "13.249.231.40",
+    "ttl": 60
+  },
+  "www.etsy.com": {
+    "ip": "151.101.195.42",
+    "ttl": 24
+  },
+  "www.example.com": {
+    "ip": "104.20.23.154",
+    "ttl": 300
+  },
+  "www.example.org": {
+    "ip": "172.66.157.237",
+    "ttl": 300
+  },
+  "www.expedia.com": {
+    "ip": "23.32.74.122",
+    "ttl": 20
+  },
+  "www.facebook.com": {
+    "ip": "157.240.211.35",
+    "ttl": 29
+  },
+  "www.fastly.com": {
+    "ip": "151.101.193.57",
+    "ttl": 60
+  },
+  "www.fifa.com": {
+    "ip": "183.80.211.218",
+    "ttl": 20
+  },
+  "www.figma.com": {
+    "ip": "3.162.58.43",
+    "ttl": 60
+  },
+  "www.firefox.com": {
+    "ip": "151.101.67.19",
+    "ttl": 438
+  },
+  "www.forbes.com": {
+    "ip": "151.101.1.55",
+    "ttl": 60
+  },
+  "www.freecodecamp.org": {
+    "ip": "104.26.2.33",
+    "ttl": 55
+  },
+  "www.ft.com": {
+    "ip": "104.18.4.165",
+    "ttl": 121
+  },
+  "www.geeksforgeeks.org": {
+    "ip": "13.35.163.19",
+    "ttl": 60
+  },
+  "www.genius.com": {
+    "ip": "104.18.23.208",
+    "ttl": 193
+  },
+  "www.github.com": {
+    "ip": "20.205.243.166",
+    "ttl": 60
+  },
+  "www.gitlab.com": {
+    "ip": "172.65.251.78",
+    "ttl": 300
+  },
+  "www.godaddy.com": {
+    "ip": "23.196.68.198",
+    "ttl": 20
+  },
+  "www.goodreads.com": {
+    "ip": "99.86.20.51",
+    "ttl": 60
+  },
+  "www.google.com": {
+    "ip": "142.250.199.78",
+    "ttl": 296
+  },
+  "www.hackerrank.com": {
+    "ip": "173.223.81.199",
+    "ttl": 20
+  },
+  "www.harvard.edu": {
+    "ip": "192.0.66.20",
+    "ttl": 2074
+  },
+  "www.heroku.com": {
+    "ip": "192.0.66.110",
+    "ttl": 3090
+  },
+  "www.hostinger.com": {
+    "ip": "104.16.211.83",
+    "ttl": 300
+  },
+  "www.hp.com": {
+    "ip": "23.32.74.120",
+    "ttl": 20
+  },
+  "www.httpbin.org": {
+    "ip": "54.235.97.46",
+    "ttl": 60
+  },
+  "www.httpforever.com": {
+    "ip": "146.190.62.39",
+    "ttl": 300
+  },
+  "www.huawei.com": {
+    "ip": "184.87.97.63",
+    "ttl": 20
+  },
+  "www.hulu.com": {
+    "ip": "23.32.74.106",
+    "ttl": 20
+  },
+  "www.ibm.com": {
+    "ip": "184.87.107.115",
+    "ttl": 20
+  },
+  "www.imdb.com": {
+    "ip": "13.249.230.51",
+    "ttl": 60
+  },
+  "www.instagram.com": {
+    "ip": "157.240.211.174",
+    "ttl": 50
+  },
+  "www.intel.com": {
+    "ip": "184.87.107.130",
+    "ttl": 20
+  },
+  "www.ionos.com": {
+    "ip": "74.208.4.76",
+    "ttl": 210
+  },
+  "www.istockphoto.com": {
+    "ip": "65.8.76.45",
+    "ttl": 60
+  },
+  "www.jira.com": {
+    "ip": "13.227.180.4",
+    "ttl": 60
+  },
+  "www.khanacademy.org": {
+    "ip": "151.101.193.42",
+    "ttl": 60
+  },
+  "www.kraken.com": {
+    "ip": "104.17.185.205",
+    "ttl": 300
+  },
+  "www.kubernetes.io": {
+    "ip": "3.33.186.135",
+    "ttl": 3600
+  },
+  "www.last.fm": {
+    "ip": "151.101.77.188",
+    "ttl": 33
+  },
+  "www.leetcode.com": {
+    "ip": "172.66.154.160",
+    "ttl": 300
+  },
+  "www.lenovo.com": {
+    "ip": "23.196.68.253",
+    "ttl": 20
+  },
+  "www.lg.com": {
+    "ip": "23.196.68.80",
+    "ttl": 20
+  },
+  "www.linkedin.com": {
+    "ip": "104.18.41.41",
+    "ttl": 300
+  },
+  "www.linux.org": {
+    "ip": "104.26.14.72",
+    "ttl": 192
+  },
+  "www.lyft.com": {
+    "ip": "13.35.36.28",
+    "ttl": 60
+  },
+  "www.mailchimp.com": {
+    "ip": "23.208.98.124",
+    "ttl": 20
+  },
+  "www.max.com": {
+    "ip": "23.32.74.112",
+    "ttl": 20
+  },
+  "www.medium.com": {
+    "ip": "162.159.152.4",
+    "ttl": 300
+  },
+  "www.messenger.com": {
+    "ip": "157.240.211.1",
+    "ttl": 35
+  },
+  "www.microsoft.com": {
+    "ip": "42.119.184.172",
+    "ttl": 20
+  },
+  "www.minecraft.net": {
+    "ip": "118.69.17.163",
+    "ttl": 20
+  },
+  "www.mit.edu": {
+    "ip": "184.87.111.50",
+    "ttl": 20
+  },
+  "www.mlb.com": {
+    "ip": "151.101.197.91",
+    "ttl": 60
+  },
+  "www.monday.com": {
+    "ip": "104.16.50.19",
+    "ttl": 120
+  },
+  "www.mozilla.org": {
+    "ip": "151.101.195.19",
+    "ttl": 15
+  },
+  "www.namecheap.com": {
+    "ip": "104.19.250.10",
+    "ttl": 300
+  },
+  "www.nasa.gov": {
+    "ip": "192.0.66.108",
+    "ttl": 1461
+  },
+  "www.nba.com": {
+    "ip": "42.119.184.215",
+    "ttl": 20
+  },
+  "www.netflix.com": {
+    "ip": "44.234.232.238",
+    "ttl": 4
+  },
+  "www.netlify.com": {
+    "ip": "15.197.167.90",
+    "ttl": 300
+  },
+  "www.nfl.com": {
+    "ip": "151.101.129.55",
+    "ttl": 60
+  },
+  "www.nintendo.com": {
+    "ip": "151.101.65.55",
+    "ttl": 60
+  },
+  "www.nodejs.org": {
+    "ip": "104.16.213.131",
+    "ttl": 192
+  },
+  "www.notion.so": {
+    "ip": "208.103.161.2",
+    "ttl": 192
+  },
+  "www.npmjs.com": {
+    "ip": "104.17.135.117",
+    "ttl": 300
+  },
+  "www.npr.org": {
+    "ip": "23.32.74.128",
+    "ttl": 20
+  },
+  "www.nvidia.com": {
+    "ip": "23.32.74.120",
+    "ttl": 20
+  },
+  "www.nytimes.com": {
+    "ip": "151.101.129.164",
+    "ttl": 60
+  },
+  "www.openai.com": {
+    "ip": "104.18.33.45",
+    "ttl": 300
+  },
+  "www.oracle.com": {
+    "ip": "23.196.68.70",
+    "ttl": 20
+  },
+  "www.paypal.com": {
+    "ip": "151.101.1.21",
+    "ttl": 270
+  },
+  "www.pexels.com": {
+    "ip": "104.18.67.220",
+    "ttl": 300
+  },
+  "www.pinterest.com": {
+    "ip": "23.196.68.213",
+    "ttl": 20
+  },
+  "www.playstation.com": {
+    "ip": "23.196.68.88",
+    "ttl": 20
+  },
+  "www.primevideo.com": {
+    "ip": "65.9.167.123",
+    "ttl": 60
+  },
+  "www.python.org": {
+    "ip": "151.101.0.223",
+    "ttl": 60
+  },
+  "www.pythonanywhere.com": {
+    "ip": "35.173.69.207",
+    "ttl": 60
+  },
+  "www.quora.com": {
+    "ip": "162.159.153.247",
+    "ttl": 191
+  },
+  "www.reddit.com": {
+    "ip": "151.101.129.140",
+    "ttl": 38
+  },
+  "www.redhat.com": {
+    "ip": "23.222.135.87",
+    "ttl": 20
+  },
+  "www.replit.com": {
+    "ip": "104.18.35.46",
+    "ttl": 300
+  },
+  "www.reuters.com": {
+    "ip": "13.35.163.110",
+    "ttl": 60
+  },
+  "www.riotgames.com": {
+    "ip": "104.111.204.182",
+    "ttl": 20
+  },
+  "www.roblox.com": {
+    "ip": "128.116.46.3",
+    "ttl": 60
+  },
+  "www.rottentomatoes.com": {
+    "ip": "23.32.74.105",
+    "ttl": 20
+  },
+  "www.salesforce.com": {
+    "ip": "23.32.74.128",
+    "ttl": 20
+  },
+  "www.samsung.com": {
+    "ip": "23.215.188.56",
+    "ttl": 19
+  },
+  "www.sendgrid.com": {
+    "ip": "54.199.88.16",
+    "ttl": 90
+  },
+  "www.shopify.com": {
+    "ip": "172.64.145.93",
+    "ttl": 60
+  },
+  "www.shutterstock.com": {
+    "ip": "13.249.231.125",
+    "ttl": 60
+  },
+  "www.slack.com": {
+    "ip": "18.136.169.56",
+    "ttl": 60
+  },
+  "www.snapchat.com": {
+    "ip": "34.149.46.130",
+    "ttl": 141
+  },
+  "www.sony.com": {
+    "ip": "23.32.74.123",
+    "ttl": 20
+  },
+  "www.soundcloud.com": {
+    "ip": "3.171.198.6",
+    "ttl": 60
+  },
+  "www.spotify.com": {
+    "ip": "151.101.67.42",
+    "ttl": 21
+  },
+  "www.squarespace.com": {
+    "ip": "198.49.23.181",
+    "ttl": 300
+  },
+  "www.squareup.com": {
+    "ip": "162.159.140.28",
+    "ttl": 60
+  },
+  "www.stackoverflow.com": {
+    "ip": "198.252.206.1",
+    "ttl": 300
+  },
+  "www.stanford.edu": {
+    "ip": "151.101.2.133",
+    "ttl": 60
+  },
+  "www.statuspage.io": {
+    "ip": "104.192.140.23",
+    "ttl": 60
+  },
+  "www.steamcommunity.com": {
+    "ip": "23.222.131.51",
+    "ttl": 20
+  },
+  "www.steampowered.com": {
+    "ip": "23.222.131.51",
+    "ttl": 20
+  },
+  "www.stripe.com": {
+    "ip": "198.202.176.41",
+    "ttl": 30
+  },
+  "www.target.com": {
+    "ip": "151.101.130.187",
+    "ttl": 59
+  },
+  "www.telegram.org": {
+    "ip": "149.154.167.99",
+    "ttl": 600
+  },
+  "www.theguardian.com": {
+    "ip": "151.101.65.111",
+    "ttl": 60
+  },
+  "www.tiktok.com": {
+    "ip": "118.69.17.28",
+    "ttl": 20
+  },
+  "www.trello.com": {
+    "ip": "99.86.20.39",
+    "ttl": 60
+  },
+  "www.tripadvisor.com": {
+    "ip": "13.249.231.111",
+    "ttl": 60
+  },
+  "www.twilio.com": {
+    "ip": "13.35.238.39",
+    "ttl": 60
+  },
+  "www.twitch.tv": {
+    "ip": "151.101.66.214",
+    "ttl": 51
+  },
+  "www.twitter.com": {
+    "ip": "172.66.0.227",
+    "ttl": 213
+  },
+  "www.uber.com": {
+    "ip": "69.48.218.2",
+    "ttl": 300
+  },
+  "www.ubuntu.com": {
+    "ip": "185.125.190.21",
+    "ttl": 60
+  },
+  "www.udemy.com": {
+    "ip": "104.16.142.237",
+    "ttl": 300
+  },
+  "www.uefa.com": {
+    "ip": "23.196.69.82",
+    "ttl": 20
+  },
+  "www.uit.edu.vn": {
+    "ip": "118.69.123.140",
+    "ttl": 60
+  },
+  "www.un.org": {
+    "ip": "3.169.71.52",
+    "ttl": 60
+  },
+  "www.unsplash.com": {
+    "ip": "151.101.1.181",
+    "ttl": 60
+  },
+  "www.vercel.app": {
+    "ip": "216.198.79.67",
+    "ttl": 300
+  },
+  "www.w3schools.com": {
+    "ip": "118.69.17.170",
+    "ttl": 20
+  },
+  "www.walmart.com": {
+    "ip": "23.196.68.140",
+    "ttl": 20
+  },
+  "www.washingtonpost.com": {
+    "ip": "23.77.20.196",
+    "ttl": 20
+  },
+  "www.weebly.com": {
+    "ip": "74.115.51.6",
+    "ttl": 3600
+  },
+  "www.whatsapp.com": {
+    "ip": "157.240.211.60",
+    "ttl": 60
+  },
+  "www.whitehouse.gov": {
+    "ip": "192.0.66.51",
+    "ttl": 3190
+  },
+  "www.who.int": {
+    "ip": "192.133.11.1",
+    "ttl": 21600
+  },
+  "www.wikipedia.org": {
+    "ip": "103.102.166.224",
+    "ttl": 144
+  },
+  "www.wix.com": {
+    "ip": "34.149.87.45",
+    "ttl": 21600
+  },
+  "www.wordpress.com": {
+    "ip": "192.0.78.13",
+    "ttl": 164
+  },
+  "www.wordpress.org": {
+    "ip": "198.143.164.252",
+    "ttl": 210
+  },
+  "www.wsj.com": {
+    "ip": "99.86.20.56",
+    "ttl": 60
+  },
+  "www.xbox.com": {
+    "ip": "23.196.68.52",
+    "ttl": 20
+  },
+  "www.xiaomi.com": {
+    "ip": "124.251.100.130",
+    "ttl": 274
+  },
+  "www.yahoo.com": {
+    "ip": "180.222.116.12",
+    "ttl": 53
+  },
+  "youtube.com": {
+    "ip": "142.250.198.206",
+    "ttl": 144
+  },
+  "www.zoom.us": {
+    "ip": "170.114.52.2",
+    "ttl": 60
+  },
+  "xbox.com": {
+    "ip": "20.112.250.133",
+    "ttl": 116
+  },
+  "xiaomi.com": {
+    "ip": "124.251.34.141",
+    "ttl": 103
+  },
+  "yahoo.com": {
+    "ip": "98.137.11.164",
+    "ttl": 1038
+  },
+  "zoom.us": {
+    "ip": "170.114.52.2",
+    "ttl": 60
+  }
 }
