@@ -14,6 +14,8 @@ from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, quote_plus, unquote_plus, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
+# Main GUI wiring user actions to session/profile/cache/network.
+
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 

@@ -1,4 +1,5 @@
 """Cookie-backed browser session and profile API client."""
+# Calls account/profile APIs and keeps session cookies in sync.
 
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ class SessionError(RuntimeError):
 
 
 class SessionManager:
+    # Browser-facing client for backend auth/profile endpoints.
     def __init__(
         self,
         *,
@@ -80,6 +82,7 @@ class SessionManager:
         body: str | None = None,
         content_type: str = "application/json",
     ) -> HTTPResponse:
+        # Sends API requests through WaterCat DNS, HTTP, and cookie layers.
         parsed = parse_url(self._base_url if "://" in self._base_url else f"http://{self._base_url}")
         scheme = parsed.protocol
         host = parsed.host

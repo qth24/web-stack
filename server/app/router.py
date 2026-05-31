@@ -1,4 +1,5 @@
 """App backend route dispatcher."""
+# Routes HTTP requests to auth, static files, and data APIs.
 import asyncio
 import json
 from urllib.parse import urlparse
@@ -28,6 +29,7 @@ from server.app.models import (
 
 
 async def route(raw_request: bytes) -> Response:
+    # Single dispatch point for the app backend.
     req = parse_request(raw_request)
     reason = waf_inspect(req)
     if reason:
@@ -150,6 +152,7 @@ async def _api_messages_post(req):
 
 
 async def _api_profile_bootstrap(req):
+    # Returns profile metadata plus encrypted entries for sync.
     user = await _get_auth_user(req)
     if user is None:
         return Response(401, body=json.dumps({"error": "not authenticated"}).encode(),
@@ -191,6 +194,7 @@ async def _api_profile_key(req):
 
 
 async def _api_profile_entries(req):
+    # Validates client-encrypted profile changes before storage.
     user = await _get_auth_user(req)
     if user is None:
         return Response(401, body=json.dumps({"error": "not authenticated"}).encode(),
@@ -235,6 +239,7 @@ async def _api_profile_entries(req):
 
 
 async def _get_auth_user(req):
+    # Resolves the session cookie into the current user.
     from server.app.models import validate_session_token
     token = extract_session_cookie(req.get("headers", {}))
     return await validate_session_token(token) if token else None

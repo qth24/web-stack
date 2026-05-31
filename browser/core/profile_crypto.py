@@ -1,4 +1,5 @@
 """Reusable client-side crypto helpers for encrypted browser profiles."""
+# Encrypts profile data and creates stable IDs for entries.
 
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ class ProfileCryptoError(RuntimeError):
 
 
 def derive_password_key(password: str, salt_hex: str) -> bytes:
+    # Derives the wrapping key from the account password.
     return hashlib.pbkdf2_hmac(
         "sha256",
         password.encode("utf-8"),
@@ -37,6 +39,7 @@ def new_salt_hex() -> str:
 
 
 def encrypt_json(value: Any, key: bytes) -> str:
+    # Serializes and encrypts one JSON payload.
     nonce = secrets.token_bytes(12)
     plaintext = json.dumps(value, separators=(",", ":")).encode("utf-8")
     aesgcm = AESGCM(key)
@@ -48,6 +51,7 @@ def encrypt_json(value: Any, key: bytes) -> str:
 
 
 def decrypt_json(packed: str, key: bytes) -> Any:
+    # Verifies integrity before decrypting encrypted payloads.
     if not packed.startswith(ENC_PREFIX):
         return json.loads(packed)
     raw = base64.urlsafe_b64decode(packed[len(ENC_PREFIX):].encode("ascii"))
@@ -69,6 +73,7 @@ def decrypt_json(packed: str, key: bytes) -> Any:
 
 
 def wrap_profile_key(master_key: bytes, password: str) -> dict[str, str]:
+    # Protects the profile master key with the user's password.
     salt_hex = new_salt_hex()
     password_key = derive_password_key(password, salt_hex)
     payload = {"master_key": base64.urlsafe_b64encode(master_key).decode("ascii")}
@@ -110,6 +115,7 @@ def unwrap_local_profile_key(packed: str, device_key: bytes) -> bytes:
 
 
 def deterministic_entry_id(master_key: bytes, collection: str, stable_id: str) -> str:
+    # Hides stable IDs while keeping sync IDs deterministic.
     digest = hmac.new(
         master_key,
         f"{collection}:{stable_id}".encode("utf-8"),

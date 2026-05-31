@@ -1,4 +1,5 @@
 """PBKDF2 password hashing and session-based authentication handlers."""
+# Handles signup, login, session cookies, and password hashing.
 import asyncio
 import hashlib
 import html
@@ -22,6 +23,7 @@ HTML_HEADERS = {"content-type": "text/html; charset=utf-8"}
 
 
 def hash_password(password: str, salt: str = None) -> tuple[str, str]:
+    # Password KDF used before storing credentials.
     if salt is None:
         salt = secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 210000)
@@ -29,6 +31,7 @@ def hash_password(password: str, salt: str = None) -> tuple[str, str]:
 
 
 def extract_session_cookie(headers: dict) -> str | None:
+    # Pulls the WaterCat session token from request cookies.
     cookie = headers.get("cookie", "")
     for part in cookie.split(";"):
         part = part.strip()
@@ -333,6 +336,7 @@ async def handle_register(
     headers: dict | None = None,
     target: str = "/auth/register",
 ) -> Response:
+    # Creates the user and immediately starts a session.
     try:
         data, wants_form = _auth_form_values(body, headers)
     except ValueError:
@@ -378,6 +382,7 @@ async def handle_login(
     headers: dict | None = None,
     target: str = "/auth/login",
 ) -> Response:
+    # Verifies credentials and issues a new session token.
     try:
         data, wants_form = _auth_form_values(body, headers)
     except ValueError:
@@ -423,6 +428,7 @@ async def handle_logout(token: str | None) -> Response:
 
 
 async def handle_me(token: str | None) -> Response:
+    # Lightweight authenticated user lookup.
     if not token:
         return Response(401, body=json.dumps({"error": "not authenticated"}).encode(), headers=JSON_HEADERS.copy())
     user = await validate_session_token(token)

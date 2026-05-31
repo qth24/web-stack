@@ -1,4 +1,5 @@
 """Server-backed encrypted profile store and ephemeral guest profile model."""
+# Manages guest profiles and encrypted profiles synced to the server.
 
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ def _deep_copy(value: Any) -> Any:
 
 
 class EphemeralGuestProfileStore:
+    # In-memory profile used when no account is unlocked.
     def __init__(self, default_bookmarks: list[str]):
         self._data = {
             "settings": {},
@@ -91,6 +93,7 @@ class EphemeralGuestProfileStore:
 
 
 class RemoteEncryptedProfileStore:
+    # Client-side encrypted profile with server-backed ciphertext storage.
     def __init__(self, api_client: Any, state_dir: Path, user: dict[str, Any]):
         self.api_client = api_client
         self.state_dir = Path(state_dir)
@@ -122,6 +125,7 @@ class RemoteEncryptedProfileStore:
         return _deep_copy(self._profile_data)
 
     async def bootstrap_with_password(self, password: str) -> dict[str, Any]:
+        # Unlocks an existing profile key or creates one for a new user.
         bootstrap = await self.api_client.get_profile_bootstrap()
         record = bootstrap.get("profile_key")
         if record:
@@ -138,6 +142,7 @@ class RemoteEncryptedProfileStore:
         return self.load_profile_data()
 
     async def restore_from_saved_key(self) -> bool:
+        # Restores the master key remembered on this device.
         local_key = self._read_local_key()
         if local_key is None:
             return False
@@ -170,6 +175,7 @@ class RemoteEncryptedProfileStore:
         shortcuts: list[dict[str, str]],
         history: list[dict[str, str]],
     ) -> dict[str, Any]:
+        # Three-way merge: previous shadow, latest remote, local desired.
         if self._master_key is None:
             raise ProfileStoreError("Encrypted profile is locked.")
         latest_bootstrap = await self.api_client.get_profile_bootstrap()
@@ -251,6 +257,7 @@ class RemoteEncryptedProfileStore:
         self._profile_data = self._maps_to_profile_data(self._shadow)
 
     def _decode_entries(self, entries: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+        # Turns server ciphertext rows back into local profile maps.
         if self._master_key is None:
             raise ProfileStoreError("Encrypted profile is locked.")
         result: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in PROFILE_COLLECTIONS}
@@ -335,6 +342,7 @@ class RemoteEncryptedProfileStore:
         shortcuts: list[dict[str, str]],
         history: list[dict[str, str]],
     ) -> dict[str, dict[str, dict[str, Any]]]:
+        # Converts current UI state into deterministic encrypted entries.
         if self._master_key is None:
             raise ProfileStoreError("Encrypted profile is locked.")
         previous = self._shadow
@@ -434,6 +442,7 @@ class RemoteEncryptedProfileStore:
         remote: dict[str, dict[str, Any]],
         final: dict[str, dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        # Computes the encrypted delta to POST back to the server.
         if self._master_key is None:
             raise ProfileStoreError("Encrypted profile is locked.")
         changes: list[dict[str, Any]] = []

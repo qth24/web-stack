@@ -1,4 +1,5 @@
 """PostgreSQL connection pool and schema initialization."""
+# Owns the app-wide PostgreSQL pool and startup schema.
 import asyncio
 import os
 from psycopg_pool import AsyncConnectionPool

@@ -4,6 +4,7 @@ import secrets
 
 from server.app.db import get_pool
 
+# Direct SQL access for users, sessions, history, and profiles.
 
 async def create_user(username: str, password_hash: str, password_salt: str, display_name: str = None) -> int:
     pool = await get_pool()
@@ -50,6 +51,7 @@ async def get_user_by_id(user_id: int) -> dict | None:
 
 
 async def create_session(user_id: int, expires_hours: int = 24) -> str:
+    # Stores only the token hash; the raw token lives in the cookie.
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=expires_hours)
@@ -64,6 +66,7 @@ async def create_session(user_id: int, expires_hours: int = 24) -> str:
 
 
 async def validate_session_token(token: str) -> dict | None:
+    # Auth gate: maps a valid cookie token back to a user.
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     pool = await get_pool()
     async with pool.connection() as conn:
@@ -159,6 +162,7 @@ async def upsert_browser_profile_key(
     wrap_kdf_version: str,
     profile_schema_version: str,
 ) -> dict:
+    # Saves the client-wrapped profile master key.
     pool = await get_pool()
     async with pool.connection() as conn:
         cursor = await conn.execute(
@@ -215,6 +219,7 @@ async def list_browser_profile_entries(user_id: int) -> list[dict]:
 
 
 async def apply_browser_profile_entry_changes(user_id: int, entries: list[dict]) -> list[dict]:
+    # Applies encrypted profile upserts and delete tombstones.
     if not entries:
         return []
     pool = await get_pool()
