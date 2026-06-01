@@ -1,4 +1,4 @@
-# WaterCat Mini Web Stack
+# Web Stack
 
 ![alt text](image.png)
 
